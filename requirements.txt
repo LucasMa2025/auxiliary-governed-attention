@@ -1,0 +1,26 @@
+# AGA - Auxiliary Governed Attention
+# =================================
+
+# Core Dependencies
+torch>=2.0.0
+transformers>=4.35.0
+
+# Web Interface
+flask>=2.3.0
+pyyaml>=6.0
+
+# LLM Adapters
+openai>=1.0.0        # For DeepSeek, vLLM adapters
+httpx>=0.25.0        # For Ollama adapter
+
+# Optional: For larger models
+# accelerate>=0.24.0
+# bitsandbytes>=0.41.0
+
+# Optional: For vLLM local deployment
+# vllm>=0.2.0
+
+# Optional: For evaluation
+# lm-eval>=0.4.0
+# datasets>=2.14.0
+
