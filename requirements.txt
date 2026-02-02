@@ -1,26 +1,45 @@
 # AGA - Auxiliary Governed Attention
-# =================================
+# ===================================
+# 产品级原型系统依赖
 
-# Core Dependencies
+# ==================== 核心依赖 ====================
 torch>=2.0.0
 transformers>=4.35.0
 
-# Web Interface
+# ==================== Web 接口 ====================
 flask>=2.3.0
+flask-cors>=4.0.0
 pyyaml>=6.0
 
-# LLM Adapters
+# ==================== LLM 适配器 ====================
 openai>=1.0.0        # For DeepSeek, vLLM adapters
 httpx>=0.25.0        # For Ollama adapter
 
-# Optional: For larger models
+# ==================== 持久化（必需） ====================
+aiosqlite>=0.19.0    # SQLite 异步支持
+
+# ==================== 持久化（生产环境） ====================
+# Redis - 热缓存层 (L1)
+# redis>=5.0.0
+
+# PostgreSQL - 冷存储层 (L2)
+# asyncpg>=0.29.0
+
+# ==================== 分布式（生产环境） ====================
+# Kafka - 消息总线
+# aiokafka>=0.10.0
+
+# ==================== 大模型支持 ====================
 # accelerate>=0.24.0
 # bitsandbytes>=0.41.0
 
-# Optional: For vLLM local deployment
+# ==================== vLLM 本地部署 ====================
 # vllm>=0.2.0
 
-# Optional: For evaluation
+# ==================== 评估工具 ====================
 # lm-eval>=0.4.0
 # datasets>=2.14.0
 
+# ==================== 监控（生产环境） ====================
+# prometheus-client>=0.19.0
+# structlog>=24.1.0
