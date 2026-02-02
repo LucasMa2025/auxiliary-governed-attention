@@ -6,8 +6,17 @@ AGA 持久化层
 - Redis: 热缓存层
 - PostgreSQL: 冷存储层
 - Composite: 分层组合适配器
+- Memory: 测试/L0 缓存
 
-版本: v3.0
+版本: v3.2
+
+v3.2 新增 Portal 扩展接口支持：
+- get_namespaces(): 获取所有命名空间
+- save_audit_log(): 保存审计日志
+- query_audit_log(): 查询审计日志
+- save_knowledge(): 简化知识保存接口
+- load_knowledge(): 简化知识加载接口
+- query_knowledge(): 查询知识列表
 """
 from .base import (
     PersistenceAdapter,
@@ -64,6 +73,22 @@ def create_adapter(adapter_type: str, **kwargs) -> PersistenceAdapter:
         raise ValueError(f"Unknown adapter type: {adapter_type}")
 
 
+# 兼容旧版 persistence.py 的导入
+try:
+    from ..persistence import (
+        SQLitePersistence,
+        AGAPersistenceManager,
+        AGAPersistence,
+        KnowledgeRecord as LegacyKnowledgeRecord,
+    )
+    _HAS_LEGACY = True
+except ImportError:
+    _HAS_LEGACY = False
+    SQLitePersistence = None
+    AGAPersistenceManager = None
+    AGAPersistence = None
+
+
 __all__ = [
     # 基类
     "PersistenceAdapter",
@@ -79,4 +104,8 @@ __all__ = [
     "PersistenceManager",
     # 工厂
     "create_adapter",
+    # 兼容旧版
+    "SQLitePersistence",
+    "AGAPersistenceManager",
+    "AGAPersistence",
 ]

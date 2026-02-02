@@ -342,6 +342,147 @@ class PersistenceAdapter(ABC):
         """
         pass
     
+    # ==================== 命名空间管理 ====================
+    
+    async def get_namespaces(self) -> List[str]:
+        """
+        获取所有命名空间
+        
+        Returns:
+            命名空间列表
+        """
+        # 默认实现返回空列表，子类应覆盖
+        return []
+    
+    # ==================== Portal 扩展方法 ====================
+    
+    async def save_knowledge(self, namespace: str, lu_id: str, data: Dict[str, Any]) -> bool:
+        """
+        保存知识（Portal 简化接口）
+        
+        Args:
+            namespace: 命名空间
+            lu_id: 知识单元 ID
+            data: 知识数据字典
+        
+        Returns:
+            是否成功
+        """
+        record = KnowledgeRecord(
+            slot_idx=data.get("slot_idx", -1),
+            lu_id=lu_id,
+            condition=data.get("condition", ""),
+            decision=data.get("decision", ""),
+            key_vector=data.get("key_vector", []),
+            value_vector=data.get("value_vector", []),
+            lifecycle_state=data.get("lifecycle_state", "probationary"),
+            namespace=namespace,
+            hit_count=data.get("hit_count", 0),
+            metadata=data.get("metadata"),
+        )
+        return await self.save_slot(namespace, record)
+    
+    async def load_knowledge(self, namespace: str, lu_id: str) -> Optional[Dict[str, Any]]:
+        """
+        加载知识（Portal 简化接口）
+        
+        Args:
+            namespace: 命名空间
+            lu_id: 知识单元 ID
+        
+        Returns:
+            知识数据字典或 None
+        """
+        record = await self.load_slot(namespace, lu_id)
+        if record:
+            return record.to_dict()
+        return None
+    
+    async def delete_knowledge(self, namespace: str, lu_id: str) -> bool:
+        """
+        删除知识（Portal 简化接口）
+        
+        Args:
+            namespace: 命名空间
+            lu_id: 知识单元 ID
+        
+        Returns:
+            是否成功
+        """
+        return await self.delete_slot(namespace, lu_id)
+    
+    async def query_knowledge(
+        self,
+        namespace: str,
+        lifecycle_states: Optional[List[str]] = None,
+        trust_tiers: Optional[List[str]] = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        """
+        查询知识列表（Portal 简化接口）
+        
+        Args:
+            namespace: 命名空间
+            lifecycle_states: 状态过滤
+            trust_tiers: 层级过滤
+            limit: 限制数量
+            offset: 偏移量
+        
+        Returns:
+            知识数据列表
+        """
+        # 默认实现：加载所有然后过滤
+        records = await self.load_all_slots(namespace)
+        
+        # 过滤
+        if lifecycle_states:
+            records = [r for r in records if r.lifecycle_state in lifecycle_states]
+        
+        # TODO: trust_tier 过滤需要在 metadata 中检查
+        
+        # 分页
+        records = records[offset:offset + limit]
+        
+        return [r.to_dict() for r in records]
+    
+    # ==================== 审计日志 ====================
+    
+    async def save_audit_log(self, entry: Dict[str, Any]) -> bool:
+        """
+        保存审计日志
+        
+        Args:
+            entry: 审计日志条目
+        
+        Returns:
+            是否成功
+        """
+        # 默认实现：不保存
+        return True
+    
+    async def query_audit_log(
+        self,
+        namespace: Optional[str] = None,
+        lu_id: Optional[str] = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        """
+        查询审计日志
+        
+        Args:
+            namespace: 命名空间过滤
+            lu_id: 知识 ID 过滤
+            limit: 限制数量
+            offset: 偏移量
+        
+        Returns:
+            审计日志列表
+        """
+        # 默认实现：返回空列表
+        return []
+    
     # ==================== 同步方法（可选实现） ====================
     
     def save_slot_sync(self, namespace: str, record: KnowledgeRecord) -> bool:

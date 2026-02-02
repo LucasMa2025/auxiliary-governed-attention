@@ -1,9 +1,35 @@
 """
-AGA 生产级持久化层
+AGA 生产级持久化层 (单机部署模式)
 
-支持：
-- Redis: 热槽位缓存
-- PostgreSQL: 冷存储 + 审计日志
+⚠️ 重要：本模块专为单机部署设计
+=========================================
+
+本模块使用 **同步** 客户端（redis、SQLAlchemy），设计目标是：
+- 与 AGA 推理进程同机部署
+- 最小化持久化延迟
+- 简化运维复杂度
+
+如需分离部署（API 服务与推理服务分开），请使用：
+- aga.persistence: 异步持久化适配器
+- aga.portal: 独立的 API 服务
+- aga.sync: Portal ↔ Runtime 同步协议
+
+架构对比：
+---------
+单机部署 (本模块):
+    LLM + AGA + persistence.py (同进程)
+    └─── 直接写入本地 Redis/PostgreSQL
+
+分离部署 (aga.portal + aga.runtime):
+    Portal (无 GPU) ────┬──── PostgreSQL
+                        │
+                        │ Redis Pub/Sub
+                        ▼
+    Runtime (GPU) ←── 订阅同步消息
+
+支持的存储：
+- Redis: 热槽位缓存 (同步客户端)
+- PostgreSQL: 冷存储 + 审计日志 (SQLAlchemy)
 - 混合模式: Redis + PostgreSQL
 """
 import json

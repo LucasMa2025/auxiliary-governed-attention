@@ -425,3 +425,97 @@ class RedisAdapter(PersistenceAdapter):
         pubsub = self._client.pubsub()
         await pubsub.subscribe(channel)
         return pubsub
+    
+    # ==================== Portal 扩展方法 ====================
+    
+    async def get_namespaces(self) -> List[str]:
+        """获取所有命名空间"""
+        if not self._client:
+            return []
+        
+        try:
+            # 扫描索引键获取命名空间
+            pattern = f"{self.key_prefix}:*:index"
+            namespaces = []
+            
+            async for key in self._client.scan_iter(match=pattern):
+                # 从键中提取命名空间: aga:namespace:index
+                parts = key.split(":")
+                if len(parts) >= 3:
+                    namespaces.append(parts[1])
+            
+            return list(set(namespaces))
+        except Exception as e:
+            logger.error(f"Failed to get namespaces from Redis: {e}")
+            return []
+    
+    async def save_audit_log(self, entry: Dict[str, Any]) -> bool:
+        """
+        保存审计日志
+        
+        Redis 适配器将审计日志存储在 List 中，带 TTL。
+        """
+        if not self._client:
+            return False
+        
+        try:
+            namespace = entry.get("namespace", "default")
+            audit_key = f"{self.key_prefix}:{namespace}:audit"
+            
+            # 添加时间戳
+            entry["timestamp"] = entry.get("timestamp", datetime.now().isoformat())
+            
+            # 推入列表并限制长度
+            await self._client.lpush(audit_key, json.dumps(entry))
+            await self._client.ltrim(audit_key, 0, 999)  # 保留最近 1000 条
+            await self._client.expire(audit_key, 86400 * 30)  # 30 天过期
+            
+            return True
+        except Exception as e:
+            logger.error(f"Failed to save audit log to Redis: {e}")
+            return False
+    
+    async def query_audit_log(
+        self,
+        namespace: Optional[str] = None,
+        lu_id: Optional[str] = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        """查询审计日志"""
+        if not self._client:
+            return []
+        
+        try:
+            if namespace:
+                # 单命名空间查询
+                audit_key = f"{self.key_prefix}:{namespace}:audit"
+                entries = await self._client.lrange(audit_key, offset, offset + limit - 1)
+            else:
+                # 获取所有命名空间的审计日志
+                namespaces = await self.get_namespaces()
+                entries = []
+                for ns in namespaces:
+                    audit_key = f"{self.key_prefix}:{ns}:audit"
+                    ns_entries = await self._client.lrange(audit_key, 0, limit * 2)
+                    entries.extend(ns_entries)
+            
+            # 解析并过滤
+            result = []
+            for entry_str in entries:
+                try:
+                    entry = json.loads(entry_str)
+                    # 按 lu_id 过滤
+                    if lu_id and entry.get("lu_id") != lu_id:
+                        continue
+                    result.append(entry)
+                except json.JSONDecodeError:
+                    continue
+            
+            # 排序并分页
+            result.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
+            return result[offset:offset + limit]
+            
+        except Exception as e:
+            logger.error(f"Failed to query audit log from Redis: {e}")
+            return []

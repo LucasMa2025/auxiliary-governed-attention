@@ -581,3 +581,74 @@ class SQLiteAdapter(PersistenceAdapter):
             except Exception as e:
                 logger.error(f"Failed to get audit log: {e}")
                 return []
+    
+    async def save_audit_log(self, entry: Dict[str, Any]) -> bool:
+        """保存审计日志（Portal 扩展接口）"""
+        if not self.enable_audit:
+            return True
+        
+        self._log_audit(
+            namespace=entry.get("namespace", "default"),
+            lu_id=entry.get("lu_id"),
+            action=entry.get("action", "unknown"),
+            old_state=entry.get("old_state"),
+            new_state=entry.get("new_state"),
+            details=json.dumps(entry.get("details")) if entry.get("details") else entry.get("reason"),
+        )
+        return True
+    
+    async def query_audit_log(
+        self,
+        namespace: Optional[str] = None,
+        lu_id: Optional[str] = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        """查询审计日志（Portal 扩展接口）"""
+        if not self.enable_audit:
+            return []
+        
+        with self._lock:
+            try:
+                with self._get_conn() as conn:
+                    cursor = conn.cursor()
+                    
+                    # 构建查询
+                    query = "SELECT * FROM audit_log WHERE 1=1"
+                    params = []
+                    
+                    if namespace:
+                        query += " AND namespace = ?"
+                        params.append(namespace)
+                    if lu_id:
+                        query += " AND lu_id = ?"
+                        params.append(lu_id)
+                    
+                    query += " ORDER BY timestamp DESC LIMIT ? OFFSET ?"
+                    params.extend([limit, offset])
+                    
+                    cursor.execute(query, params)
+                    rows = cursor.fetchall()
+                
+                return [dict(row) for row in rows]
+            except Exception as e:
+                logger.error(f"Failed to query audit log: {e}")
+                return []
+    
+    # ==================== 命名空间管理 ====================
+    
+    async def get_namespaces(self) -> List[str]:
+        """获取所有命名空间"""
+        with self._lock:
+            try:
+                with self._get_conn() as conn:
+                    cursor = conn.cursor()
+                    cursor.execute('''
+                        SELECT DISTINCT namespace FROM knowledge
+                    ''')
+                    rows = cursor.fetchall()
+                
+                return [row['namespace'] for row in rows]
+            except Exception as e:
+                logger.error(f"Failed to get namespaces: {e}")
+                return []

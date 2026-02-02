@@ -3,7 +3,7 @@ AGA (Auxiliary Governed Attention) - 辅助治理注意力
 
 热插拔式知识注入系统，无需向量化训练。
 
-版本: v3.0
+版本: v3.1
 
 主要特性：
 - 零训练注入：知识直接写入 buffer，无需梯度计算
@@ -12,6 +12,7 @@ AGA (Auxiliary Governed Attention) - 辅助治理注意力
 - 即时隔离：问题知识可立即移除影响
 - 多适配器持久化：SQLite/Redis/PostgreSQL
 - 分布式支持：多实例同步
+- REST API：FastAPI 接口，支持外部治理系统集成
 
 使用示例：
 
@@ -49,7 +50,7 @@ await persistence.save_aga_state(aga_modules[-1])
 """
 
 # 版本信息
-__version__ = "3.0.0"
+__version__ = "3.2.0"
 __author__ = "AGA Team"
 
 # ==================== 类型定义 ====================
@@ -144,6 +145,85 @@ from .entropy_gate import (
     EntropyCalculator,
 )
 
+# ==================== REST API ====================
+# API 模块需要额外依赖（fastapi, uvicorn）
+try:
+    from .api import (
+        create_api_app,
+        AGAAPIService,
+        AGAClient,
+        AsyncAGAClient,
+    )
+    _HAS_API = True
+except ImportError:
+    _HAS_API = False
+    create_api_app = None
+    AGAAPIService = None
+    AGAClient = None
+    AsyncAGAClient = None
+
+# ==================== Portal (分离部署) ====================
+try:
+    from .portal import (
+        create_portal_app,
+        PortalService,
+    )
+    _HAS_PORTAL = True
+except ImportError:
+    _HAS_PORTAL = False
+    create_portal_app = None
+    PortalService = None
+
+# ==================== Runtime (分离部署) ====================
+try:
+    from .runtime import (
+        RuntimeAgent,
+        AGARuntime,
+        LocalCache,
+    )
+    _HAS_RUNTIME = True
+except ImportError:
+    _HAS_RUNTIME = False
+    RuntimeAgent = None
+    AGARuntime = None
+    LocalCache = None
+
+# ==================== 配置 (分离部署) ====================
+try:
+    from .config import (
+        PortalConfig,
+        RuntimeConfig,
+        SyncConfig,
+        load_config,
+    )
+except ImportError:
+    PortalConfig = None
+    RuntimeConfig = None
+    SyncConfig = None
+    load_config = None
+
+# ==================== 同步协议 ====================
+try:
+    from .sync import (
+        SyncMessage,
+        SyncPublisher,
+        SyncSubscriber,
+    )
+except ImportError:
+    SyncMessage = None
+    SyncPublisher = None
+    SyncSubscriber = None
+
+# ==================== 客户端 ====================
+try:
+    from .client import (
+        AGAClient as PortalClient,
+        AsyncAGAClient as AsyncPortalClient,
+    )
+except ImportError:
+    PortalClient = None
+    AsyncPortalClient = None
+
 # ==================== 导出列表 ====================
 __all__ = [
     # 版本
@@ -213,6 +293,36 @@ __all__ = [
     "EntropyGate",
     "EntropyGateWithDecay",
     "EntropyCalculator",
+    
+    # REST API
+    "create_api_app",
+    "AGAAPIService",
+    "AGAClient",
+    "AsyncAGAClient",
+    
+    # Portal (分离部署)
+    "create_portal_app",
+    "PortalService",
+    
+    # Runtime (分离部署)
+    "RuntimeAgent",
+    "AGARuntime",
+    "LocalCache",
+    
+    # 配置
+    "PortalConfig",
+    "RuntimeConfig",
+    "SyncConfig",
+    "load_config",
+    
+    # 同步
+    "SyncMessage",
+    "SyncPublisher",
+    "SyncSubscriber",
+    
+    # 客户端
+    "PortalClient",
+    "AsyncPortalClient",
 ]
 
 

@@ -627,3 +627,116 @@ class PostgresAdapter(PersistenceAdapter):
         except Exception as e:
             logger.error(f"Failed to get audit log from PostgreSQL: {e}")
             return []
+    
+    async def save_audit_log(self, entry: Dict[str, Any]) -> bool:
+        """保存审计日志（Portal 扩展接口）"""
+        if not self._pool or not self.enable_audit:
+            return True
+        
+        try:
+            async with self._pool.acquire() as conn:
+                await self._log_audit(
+                    conn,
+                    namespace=entry.get("namespace", "default"),
+                    lu_id=entry.get("lu_id"),
+                    action=entry.get("action", "unknown"),
+                    old_state=entry.get("old_state"),
+                    new_state=entry.get("new_state"),
+                    details=json.dumps(entry.get("details")) if entry.get("details") else entry.get("reason"),
+                )
+            return True
+        except Exception as e:
+            logger.error(f"Failed to save audit log to PostgreSQL: {e}")
+            return False
+    
+    async def query_audit_log(
+        self,
+        namespace: Optional[str] = None,
+        lu_id: Optional[str] = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        """查询审计日志（Portal 扩展接口）"""
+        if not self._pool or not self.enable_audit:
+            return []
+        
+        try:
+            async with self._pool.acquire() as conn:
+                # 构建查询
+                conditions = []
+                params = []
+                param_idx = 1
+                
+                if namespace:
+                    conditions.append(f"namespace = ${param_idx}")
+                    params.append(namespace)
+                    param_idx += 1
+                if lu_id:
+                    conditions.append(f"lu_id = ${param_idx}")
+                    params.append(lu_id)
+                    param_idx += 1
+                
+                where_clause = " AND ".join(conditions) if conditions else "1=1"
+                
+                query = f'''
+                    SELECT * FROM audit_log 
+                    WHERE {where_clause}
+                    ORDER BY timestamp DESC 
+                    LIMIT ${param_idx} OFFSET ${param_idx + 1}
+                '''
+                params.extend([limit, offset])
+                
+                rows = await conn.fetch(query, *params)
+            
+            return [dict(row) for row in rows]
+        except Exception as e:
+            logger.error(f"Failed to query audit log from PostgreSQL: {e}")
+            return []
+    
+    # ==================== 命名空间管理 ====================
+    
+    async def get_namespaces(self) -> List[str]:
+        """获取所有命名空间"""
+        if not self._pool:
+            return []
+        
+        try:
+            async with self._pool.acquire() as conn:
+                rows = await conn.fetch('''
+                    SELECT DISTINCT namespace FROM knowledge
+                ''')
+            
+            return [row['namespace'] for row in rows]
+        except Exception as e:
+            logger.error(f"Failed to get namespaces from PostgreSQL: {e}")
+            return []
+    
+    # ==================== DSN 连接支持 ====================
+    
+    @classmethod
+    async def from_dsn(cls, dsn: str, **kwargs) -> "PostgresAdapter":
+        """
+        从 DSN 创建适配器
+        
+        Args:
+            dsn: PostgreSQL 连接字符串 (postgresql://user:pass@host:port/db)
+            **kwargs: 其他参数
+        
+        Returns:
+            PostgresAdapter 实例
+        """
+        # 解析 DSN
+        import urllib.parse
+        parsed = urllib.parse.urlparse(dsn)
+        
+        adapter = cls(
+            host=parsed.hostname or "localhost",
+            port=parsed.port or 5432,
+            database=parsed.path.lstrip("/") if parsed.path else "aga",
+            user=parsed.username or "aga",
+            password=parsed.password,
+            **kwargs
+        )
+        
+        await adapter.connect()
+        return adapter

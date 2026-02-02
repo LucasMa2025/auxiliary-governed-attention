@@ -260,6 +260,28 @@ class MemoryAdapter(PersistenceAdapter):
                 self._storage.clear()
     
     def get_all_namespaces(self) -> List[str]:
+        """获取所有命名空间（同步方法，向后兼容）"""
+        with self._lock:
+            return list(self._storage.keys())
+    
+    # ==================== Portal 扩展方法 ====================
+    
+    async def get_namespaces(self) -> List[str]:
         """获取所有命名空间"""
         with self._lock:
             return list(self._storage.keys())
+    
+    async def save_audit_log(self, entry: Dict[str, Any]) -> bool:
+        """保存审计日志（内存适配器不持久化审计日志）"""
+        # 内存适配器不需要审计日志
+        return True
+    
+    async def query_audit_log(
+        self,
+        namespace: Optional[str] = None,
+        lu_id: Optional[str] = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        """查询审计日志（内存适配器不支持）"""
+        return []

@@ -1,13 +1,40 @@
 """
-AGA 知识写入 API
+AGA 知识写入器 (单机部署模式)
 
-独立的知识写入模块，与推理路径解耦。
+⚠️ 重要：本模块专为单机部署设计
+=========================================
+
+本模块通过 **进程内直接调用** 写入知识到本地 AGA 实例：
+- 直接操作 ConcurrentAGAManager (内存中的槽位池)
+- 直接操作 PersistenceManager (本地持久化)
+- 使用 Python threading 实现异步写入队列
+
+如需分离部署（API 服务与推理服务分开），请使用：
+- aga.portal.PortalService: 通过 HTTP API 管理知识元数据
+- aga.client.AGAClient: 外部系统访问 Portal 的 HTTP 客户端
+- aga.sync: Portal 通过消息队列同步到 Runtime
+
+架构对比：
+---------
+单机部署 (本模块):
+    治理系统 ─── KnowledgeWriter ─── AGAOperator (同进程)
+                     │
+                     └─── PersistenceManager (本地)
+
+分离部署 (aga.portal + aga.runtime):
+    治理系统 ─── AGAClient ─── Portal API ─── PortalService
+                                                    │
+                                              Redis Pub/Sub
+                                                    ▼
+                                              RuntimeAgent (订阅)
+                                                    │
+                                              LocalCache + AGARuntime
 
 设计原则：
 - 写入操作异步，不阻塞推理
 - 支持批量写入
 - 支持质量评估（否决型）
-- 完整的审计日志
+- 完整的审计日志 (通过 PersistenceManager)
 """
 import time
 import logging
