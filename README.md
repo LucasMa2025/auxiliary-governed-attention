@@ -3,7 +3,7 @@
 <div align="center">
 
 ![AGA Logo](https://img.shields.io/badge/AGA-Auxiliary%20Governed%20Attention-blue?style=for-the-badge)
-![Version](https://img.shields.io/badge/Version-3.1-green?style=flat-square)
+![Version](https://img.shields.io/badge/Version-3.2-green?style=flat-square)
 ![Python](https://img.shields.io/badge/Python-3.10+-green?style=flat-square)
 ![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-orange?style=flat-square)
 ![License](https://img.shields.io/badge/License-MIT-yellow?style=flat-square)
@@ -37,27 +37,62 @@
 **AGA 是 Transformer 模型的热插拔知识管理器，不是完整的治理系统。**
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│        外部治理系统（如：可控持续自学习系统）           │
-│        - 知识生成、验证、审批                                │
-│        - 生命周期决策                                        │
-│        - 冲突解决、质量评估                                  │
-│        - 产出：Learning Unit (LU)                           │
-└──────────────────────────┬──────────────────────────────────┘
-                           │ Knowledge Transfer API
-                           ▼
-┌─────────────────────────────────────────────────────────────┐
-│        AGA 知识管理器（本项目）                              │
-│        - 知识存储与检索                                      │
-│        - 熵门控与路由                                        │
-│        - 多实例同步                                          │
-│        - 持久化存储                                          │
-└──────────────────────────┬──────────────────────────────────┘
-                           │
-                           ▼
-┌─────────────────────────────────────────────────────────────┐
-│        Frozen Transformer（冻结的基座模型）                  │
-└─────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                      可控自学习系统 (Continuous Learning System)                 │
+│                      - 知识生成、验证、审批                                       │
+│                      - 产出：Learning Unit (LU)                                  │
+└────────────────────────────────────┬────────────────────────────────────────────┘
+                                     │
+                                     ▼
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                            治理系统 (Governance System)                          │
+│                      - 生命周期决策 (CONFIRM/DEPRECATE/QUARANTINE)              │
+│                      - 冲突解决、质量评估                                        │
+│                      - 产出：Governance Decision                                 │
+└────────────────────────────────────┬────────────────────────────────────────────┘
+                                     │
+                                     ▼
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                         Bridge (LU Transfer API Client)                          │
+│                      - AGAClient / AsyncAGAClient                                │
+│                      - HTTP/REST 通信                                            │
+└────────────────────────────────────┬────────────────────────────────────────────┘
+                                     │
+                                     ▼
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                           AGA Portal (API Server)                                │
+│                      ★ 独立部署 - 无 GPU 依赖 ★                                  │
+│                      - 知识元数据管理 (CRUD)                                     │
+│                      - 生命周期状态管理                                          │
+│                      - 审计日志                                                  │
+│                      - 通过消息队列同步到 Runtime                                │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│   [PostgreSQL/SQLite]      [Redis/Kafka]        [Runtime Registry]              │
+└────────────────────────────────────┬────────────────────────────────────────────┘
+                                     │ 同步协议 (Redis Pub-Sub / Kafka)
+          ┌──────────────────────────┼──────────────────────────┐
+          │                          │                          │
+          ▼                          ▼                          ▼
+┌─────────────────────┐  ┌─────────────────────┐  ┌─────────────────────┐
+│   AGA Runtime #1    │  │   AGA Runtime #2    │  │   AGA Runtime #N    │
+│   (GPU Server)      │  │   (GPU Server)      │  │   (GPU Server)      │
+├─────────────────────┤  ├─────────────────────┤  ├─────────────────────┤
+│  ┌───────────────┐  │  │  ┌───────────────┐  │  │  ┌───────────────┐  │
+│  │  LLM Model    │  │  │  │  LLM Model    │  │  │  │  LLM Model    │  │
+│  │  (Frozen)     │  │  │  │  (Frozen)     │  │  │  │  (Frozen)     │  │
+│  └───────┬───────┘  │  │  └───────┬───────┘  │  │  └───────┬───────┘  │
+│          │          │  │          │          │  │          │          │
+│  ┌───────▼───────┐  │  │  ┌───────▼───────┐  │  │  ┌───────▼───────┐  │
+│  │  AGA Module   │  │  │  │  AGA Module   │  │  │  │  AGA Module   │  │
+│  │  - SlotPool   │  │  │  │  - SlotPool   │  │  │  │  - SlotPool   │  │
+│  │  - EntropyGate│  │  │  │  - EntropyGate│  │  │  │  - EntropyGate│  │
+│  │  - Decay      │  │  │  │  - Decay      │  │  │  │  - Decay      │  │
+│  └───────────────┘  │  │  └───────────────┘  │  │  └───────────────┘  │
+│  ┌───────────────┐  │  │  ┌───────────────┐  │  │  ┌───────────────┐  │
+│  │  Sync Agent   │  │  │  │  Sync Agent   │  │  │  │  Sync Agent   │  │
+│  │  (订阅变更)   │  │  │  │  (订阅变更)   │  │  │  │  (订阅变更)   │  │
+│  └───────────────┘  │  │  └───────────────┘  │  │  └───────────────┘  │
+└─────────────────────┘  └─────────────────────┘  └─────────────────────┘
 ```
 
 **AGA 负责**：
@@ -104,6 +139,38 @@ AGA/
 │   ├── entropy_gate.py            # 熵门控
 │   ├── exceptions.py              # 异常处理
 │   │
+│   ├── config/                    # ★ 配置管理 (v3.2 新增)
+│   │   ├── portal.py              # Portal 配置
+│   │   ├── runtime.py             # Runtime 配置
+│   │   ├── sync.py                # 同步协议配置
+│   │   └── loader.py              # YAML 加载器
+│   │
+│   ├── portal/                    # ★ Portal API (v3.2 新增)
+│   │   ├── app.py                 # FastAPI 应用工厂
+│   │   ├── service.py             # 业务逻辑层（无 GPU）
+│   │   ├── routes.py              # HTTP 路由
+│   │   └── registry.py            # Runtime 注册表
+│   │
+│   ├── runtime/                   # ★ Runtime Agent (v3.2 新增)
+│   │   ├── agent.py               # 同步代理
+│   │   ├── aga_runtime.py         # Runtime 推理模块
+│   │   └── cache.py               # 本地知识缓存
+│   │
+│   ├── sync/                      # ★ 同步协议 (v3.2 新增)
+│   │   ├── protocol.py            # 消息协议定义
+│   │   ├── publisher.py           # 消息发布器
+│   │   ├── subscriber.py          # 消息订阅器
+│   │   └── backends.py            # Redis/Kafka/Memory 后端
+│   │
+│   ├── client/                    # ★ 客户端库 (v3.2 新增)
+│   │   └── portal_client.py       # 外部系统集成客户端
+│   │
+│   ├── api/                       # REST API（单体部署）
+│   │   ├── app.py                 # FastAPI 应用
+│   │   ├── service.py             # 服务层
+│   │   ├── routes.py              # 路由层
+│   │   └── client.py              # HTTP 客户端
+│   │
 │   ├── operator/                  # 算子层
 │   │   ├── aga_operator.py        # 统一 AGA 算子
 │   │   ├── manager.py             # 多实例管理器
@@ -130,6 +197,10 @@ AGA/
 │       ├── slot_pool.py           # 槽位池管理
 │       └── operator.py            # 生产算子
 │
+├── configs/                       # ★ 配置文件模板 (v3.2 新增)
+│   ├── portal_config.yaml         # Portal 配置示例
+│   └── runtime_config.yaml        # Runtime 配置示例
+│
 ├── llm/                           # LLM 适配器
 │   └── adapters/
 │       ├── base.py                # 适配器基类
@@ -143,8 +214,10 @@ AGA/
 │   └── config.yaml                # 配置文件
 │
 ├── scripts/                       # 启动脚本
-│   ├── start_experiment_tool.sh   # Linux/macOS
-│   └── start_experiment_tool.bat  # Windows
+│   ├── start_portal.sh            # ★ Portal 启动 (Linux/macOS)
+│   ├── start_portal.bat           # ★ Portal 启动 (Windows)
+│   ├── start_experiment_tool.sh   # 实验工具 (Linux/macOS)
+│   └── start_experiment_tool.bat  # 实验工具 (Windows)
 │
 ├── tests/                         # 单元测试
 │   ├── test_core.py
@@ -169,11 +242,93 @@ AGA/
 # 基础依赖
 pip install torch transformers flask pyyaml aiosqlite
 
+# Portal API（v3.2 新增）
+pip install fastapi uvicorn httpx pydantic
+
 # 生产环境（可选）
 pip install redis asyncpg aiokafka
 ```
 
-#### 2. 启动实验工具
+#### 2. 分离部署模式（v3.2 新增）
+
+**v3.2 引入了 Portal + Runtime 分离部署架构，支持大规模生产环境。**
+
+##### 2.1 启动 Portal（API 服务，无需 GPU）
+
+```bash
+# 开发模式
+./scripts/start_portal.sh --dev
+
+# 生产模式（使用 Redis + PostgreSQL）
+./scripts/start_portal.sh --prod --redis localhost --postgres postgresql://...
+
+# 或使用 Python
+python -m aga.portal.app --host 0.0.0.0 --port 8081
+```
+
+Portal 提供 REST API，访问 `http://localhost:8081/docs` 查看 OpenAPI 文档。
+
+##### 2.2 启动 Runtime（与 LLM 同部署，需要 GPU）
+
+```python
+from aga.runtime import RuntimeAgent
+from aga.config import RuntimeConfig
+
+# 创建配置
+config = RuntimeConfig.for_production(
+    instance_id="runtime-001",
+    portal_url="http://portal:8081",
+    redis_host="localhost",
+    hidden_dim=4096,
+    num_slots=100,
+)
+
+# 创建 Agent
+agent = RuntimeAgent(config)
+
+# 初始化并启动
+await agent.initialize()
+await agent.start()
+
+# 附加到模型
+aga_layer = agent.attach_to_layer(transformer_layer)
+
+# 使用（推理循环中）
+output, diagnostics = agent.get_runtime().forward(hidden_states, attention_mask)
+```
+
+##### 2.3 外部治理系统集成
+
+```python
+from aga.client import AGAClient
+
+# 创建客户端
+client = AGAClient("http://portal:8081")
+
+# 注入知识
+client.inject_knowledge(
+    lu_id="knowledge_001",
+    condition="当用户询问法国首都",
+    decision="回答巴黎",
+    key_vector=[...],  # 编码后的向量
+    value_vector=[...],
+    namespace="geography",
+    lifecycle_state="probationary",
+)
+
+# 确认知识
+client.confirm("knowledge_001", reason="验证通过")
+
+# 隔离问题知识
+client.quarantine("knowledge_002", reason="检测到错误")
+
+# 查询统计
+stats = client.get_statistics(namespace="geography")
+```
+
+#### 3. 单体部署模式（传统方式）
+
+##### 3.1 启动实验工具
 
 ```bash
 # Linux/macOS
@@ -188,7 +343,7 @@ python -m aga_experiment_tool.app --port 8765
 
 访问 `http://localhost:8765`，默认密码：`aga_experiment_2026`
 
-#### 3. 代码使用
+##### 3.2 代码使用（单体模式）
 
 ```python
 from aga import AGAConfig, AGAOperator, AGAManager
@@ -226,9 +381,54 @@ aga.update_lifecycle(0, LifecycleState.CONFIRMED)
 print(aga.get_statistics())
 ```
 
+### 🏗️ 部署架构选择
+
+AGA v3.2 提供两种部署模式：
+
+| 模式         | 适用场景           | 特点                               |
+| ------------ | ------------------ | ---------------------------------- |
+| **单体部署** | 开发测试、单机推理 | 简单、API 与 AGA 同进程            |
+| **分离部署** | 多实例生产、云原生 | Portal 无 GPU、Runtime 按 LLM 扩展 |
+
+#### 分离部署架构优势
+
+```
+┌────────────────────────────────────────────────────────────────────────┐
+│                           分离部署 vs 单体部署                          │
+├────────────────────────────────────────────────────────────────────────┤
+│                                                                        │
+│  单体部署                        分离部署                               │
+│  ┌──────────────────┐           ┌──────────────────┐                  │
+│  │ API + AGA + LLM  │           │ Portal (API)     │ ← 无 GPU         │
+│  │ (同一进程)       │           │ - 知识管理       │                  │
+│  │                  │           │ - 审计日志       │                  │
+│  └──────────────────┘           └────────┬─────────┘                  │
+│  优点：简单                               │ Redis/Kafka               │
+│  缺点：                          ┌───────┼───────┐                     │
+│  - API 占用 GPU                  ▼       ▼       ▼                     │
+│  - 难以水平扩展                ┌─────┐ ┌─────┐ ┌─────┐                │
+│  - 单点故障                    │RT-1│ │RT-2│ │RT-N│ ← GPU           │
+│                                │+LLM│ │+LLM│ │+LLM│                  │
+│                                └─────┘ └─────┘ └─────┘                │
+│                                优点：                                  │
+│                                - Portal 独立扩展                       │
+│                                - Runtime 按 LLM 扩展                  │
+│                                - 故障隔离                              │
+│                                                                        │
+└────────────────────────────────────────────────────────────────────────┘
+```
+
+| 组件    | 单体部署      | 分离部署           |
+| ------- | ------------- | ------------------ |
+| Portal  | 与 AGA 同进程 | 独立服务（无 GPU） |
+| Runtime | N/A           | 与 LLM 同机（GPU） |
+| 同步    | 内存直接访问  | Redis Pub/Sub      |
+| 持久化  | 本地文件      | PostgreSQL         |
+| 扩展性  | 垂直扩展      | 水平扩展           |
+
 ### 💾 多适配器持久化
 
-AGA v3.0 支持分层缓存架构：
+AGA v3.0+ 支持分层缓存架构：
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
