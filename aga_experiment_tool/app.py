@@ -3,9 +3,11 @@ AGA Experiment Tool - Web Interface
 
 A simple web tool for AGA experiments:
 - Knowledge injection with persistence
-- Multi-model support (DeepSeek, Qwen, Ollama, vLLM)
+- Multi-model support (GPT-2, Qwen, LLaMA, etc.)
 - Experiment data collection
 - Statistics and monitoring
+
+Version: v3.1
 
 Usage:
     python app.py [--config config.yaml] [--port 8765]
@@ -96,9 +98,15 @@ class AGAExperimentManager:
         Path(config.output_dir).mkdir(parents=True, exist_ok=True)
         
         # Initialize persistence
-        from aga.persistence import SQLitePersistence
-        self.persistence = SQLitePersistence(config.db_path)
-        logger.info(f"Persistence initialized: {config.db_path}")
+        try:
+            from aga.persistence import SQLitePersistence, AGAPersistenceManager
+            self.persistence = SQLitePersistence(config.db_path)
+            logger.info(f"Persistence initialized: {config.db_path}")
+        except ImportError:
+            # Fallback to old persistence module
+            from aga.persistence import SQLitePersistence
+            self.persistence = SQLitePersistence(config.db_path)
+            logger.info(f"Persistence initialized (legacy): {config.db_path}")
     
     def load_model(self, model_name: str) -> bool:
         """Load a model and create AGA module"""
@@ -158,8 +166,11 @@ class AGAExperimentManager:
     
     def _create_aga_module(self, model_name: str):
         """Create AGA module for a model"""
-        from aga.core import AuxiliaryGovernedAttention, AGAManager
-        from aga.persistence import AGAPersistenceManager
+        from aga import AuxiliaryGovernedAttention, AGAManager
+        try:
+            from aga.persistence import AGAPersistenceManager
+        except ImportError:
+            AGAPersistenceManager = None
         
         model = self.models[model_name]
         
@@ -193,8 +204,13 @@ class AGAExperimentManager:
         self.aga_modules[model_name] = aga
         
         # Create persistence manager
-        pm = AGAPersistenceManager(self.persistence, aga_id=model_name)
-        self.persistence_managers[model_name] = pm
+        try:
+            from aga.persistence import AGAPersistenceManager
+            pm = AGAPersistenceManager(self.persistence, aga_id=model_name)
+            self.persistence_managers[model_name] = pm
+        except (ImportError, AttributeError):
+            logger.warning(f"Persistence manager not available for {model_name}")
+            self.persistence_managers[model_name] = None
         
         logger.info(f"AGA created for {model_name}: hidden_dim={hidden_dim}, num_heads={num_heads}")
     
@@ -230,7 +246,7 @@ class AGAExperimentManager:
             return {"success": False, "error": "AGA not initialized"}
         
         try:
-            from aga.core import LifecycleState
+            from aga import LifecycleState
             
             # Encode condition and decision
             with torch.no_grad():
@@ -327,7 +343,7 @@ class AGAExperimentManager:
             return {"success": False, "error": "AGA not initialized"}
         
         try:
-            from aga.core import LifecycleState
+            from aga import LifecycleState
             
             state_map = {
                 'probationary': LifecycleState.PROBATIONARY,

@@ -1,71 +1,120 @@
 # AGA Experiment Tool Configuration
-# =================================
+# ==================================
+# Version: v3.1
 
 # Authentication
 auth:
-  enabled: true
-  password: "aga_experiment_2026"  # Change this in production!
+    enabled: true
+    password: "aga_experiment_2026" # Change this in production!
 
 # Server
 server:
-  host: "0.0.0.0"
-  port: 8765
-  debug: false
+    host: "0.0.0.0"
+    port: 8765
+    debug: false
 
 # Model Configuration
 models:
-  # Default model to load
-  default: "gpt2"
-  
-  # Available models (will be loaded on demand)
-  available:
-    - name: "gpt2"
-      type: "huggingface"
-      model_id: "gpt2"
-      
-    - name: "gpt2-medium"
-      type: "huggingface"
-      model_id: "gpt2-medium"
-      
-    - name: "qwen2-0.5b"
-      type: "huggingface"
-      model_id: "Qwen/Qwen2-0.5B"
-      
-    - name: "deepseek-coder-1.3b"
-      type: "huggingface"
-      model_id: "deepseek-ai/deepseek-coder-1.3b-instruct"
-      
-    - name: "llama-2-7b"
-      type: "huggingface"
-      model_id: "meta-llama/Llama-2-7b-hf"
-      
-    - name: "mistral-7b"
-      type: "huggingface"
-      model_id: "mistralai/Mistral-7B-v0.1"
+    # Default model to load
+    default: "gpt2"
+
+    # Available models (will be loaded on demand)
+    available:
+        # Small models (for demo/testing)
+        - name: "gpt2"
+          type: "huggingface"
+          model_id: "gpt2"
+
+        - name: "gpt2-medium"
+          type: "huggingface"
+          model_id: "gpt2-medium"
+
+        - name: "qwen2-0.5b"
+          type: "huggingface"
+          model_id: "Qwen/Qwen2-0.5B"
+
+        - name: "qwen2.5-0.5b"
+          type: "huggingface"
+          model_id: "Qwen/Qwen2.5-0.5B"
+
+        # Medium models
+        - name: "deepseek-coder-1.3b"
+          type: "huggingface"
+          model_id: "deepseek-ai/deepseek-coder-1.3b-instruct"
+
+        - name: "qwen-1.8b"
+          type: "huggingface"
+          model_id: "Qwen/Qwen-1_8B"
+
+        - name: "llama-3.2-1b"
+          type: "huggingface"
+          model_id: "meta-llama/Llama-3.2-1B"
+
+        # Large models (GPU required)
+        - name: "llama-2-7b"
+          type: "huggingface"
+          model_id: "meta-llama/Llama-2-7b-hf"
+
+        - name: "mistral-7b"
+          type: "huggingface"
+          model_id: "mistralai/Mistral-7B-v0.1"
 
 # AGA Configuration
 aga:
-  bottleneck_dim: 64
-  num_slots: 100
-  target_layers: [-4, -3, -2, -1]  # Last 4 layers
-  tau_low: 0.5
-  tau_high: 2.0
-  initial_lifecycle: "probationary"
+    # Core parameters
+    bottleneck_dim: 64
+    num_slots: 100
+    target_layers: [-4, -3, -2, -1] # Last 4 layers
 
-# Persistence (SQLite for Demo)
+    # Entropy gating
+    tau_low: 0.5
+    tau_high: 2.0
+
+    # Lifecycle
+    initial_lifecycle: "probationary"
+
+    # Routing
+    top_k_routing: 8
+    early_exit_threshold: 0.05
+
+# Persistence
 persistence:
-  db_path: "./aga_data.db"
+    # SQLite (default for demo)
+    db_path: "./aga_data.db"
+
+    # Redis (optional, for production)
+    # redis:
+    #   enabled: false
+    #   host: "localhost"
+    #   port: 6379
+    #   db: 0
+
+    # PostgreSQL (optional, for production)
+    # postgres:
+    #   enabled: false
+    #   host: "localhost"
+    #   port: 5432
+    #   database: "aga"
+    #   user: "aga"
+    #   password: ""
 
 # Experiment Configuration
 experiment:
-  # Number of runs for statistics
-  num_runs: 3
-  random_seeds: [42, 123, 456]
-  
-  # Output directory
-  output_dir: "./experiment_results"
+    # Number of runs for statistics
+    num_runs: 3
+    random_seeds: [42, 123, 456]
+
+    # Output directory
+    output_dir: "./experiment_results"
 
 # Logging
 logging:
-  level: "INFO"
-  file: "./aga_experiment.log"
+    level: "INFO"
+    file: "./aga_experiment.log"
+
+# Distributed (optional)
+distributed:
+    enabled: false
+    backend: "redis" # redis or kafka
+    instance_id: "experiment-tool-1"
+    namespace: "experiment"
