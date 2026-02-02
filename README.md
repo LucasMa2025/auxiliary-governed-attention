@@ -1071,76 +1071,111 @@ AGA 作为 Transformer 模型的**热插拔式知识管理器**，在持续可�
 
 ### 📖 Background
 
-After deploying large language models (LLMs), dynamically integrating new knowledge without compromising existing capabilities remains a long-standing challenge:
+How to dynamically integrate new knowledge after LLM deployment without compromising existing capabilities has been a long-standing unresolved challenge:
 
-| Existing Solutions   | Problems                                                                                                    |
+| Existing Solutions   | Issues                                                                                                      |
 | -------------------- | ----------------------------------------------------------------------------------------------------------- |
 | **Full Fine-tuning** | Catastrophic forgetting, high computational cost                                                            |
 | **LoRA/Adapter**     | Requires training, hyperparameter sensitive                                                                 |
-| **RAG**              | External retrieval rather than internalized capability; model cannot distinguish "knowing" from "borrowing" |
+| **RAG**              | External retrieval rather than internalized capability, model cannot distinguish "knowing" from "borrowing" |
 
 **AGA (Auxiliary Governed Attention)** proposes a new paradigm:
 
-> Attach a governable auxiliary attention module to frozen Transformers, dynamically injecting knowledge at inference time while maintaining **sovereign boundaries** between the primary model and auxiliary knowledge.
+> Attach a governable auxiliary attention module to a frozen Transformer, dynamically inject knowledge during inference, while maintaining **sovereign boundaries** between the main model and auxiliary knowledge.
 
-### ⚠️ Important: AGA's Positioning
+### ⚠️ Important Note: AGA's Positioning
 
-**AGA is a hot-swappable knowledge manager for Transformer models, not a complete governance system.**
+**AGA is a hot-pluggable knowledge manager for Transformer models, not a complete governance system.**
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│    External Governance System (e.g., Controllable CLS)      │
-│    - Knowledge generation, verification, approval           │
-│    - Lifecycle decisions                                    │
-│    - Conflict resolution, quality assessment                │
-│    - Output: Learning Unit (LU)                             │
-└──────────────────────────┬──────────────────────────────────┘
-                           │ Knowledge Transfer API
-                           ▼
-┌─────────────────────────────────────────────────────────────┐
-│    AGA Knowledge Manager (This Project)                     │
-│    - Knowledge storage and retrieval                        │
-│    - Entropy gating and routing                             │
-│    - Multi-instance synchronization                         │
-│    - Persistent storage                                     │
-└──────────────────────────┬──────────────────────────────────┘
-                           │
-                           ▼
-┌─────────────────────────────────────────────────────────────┐
-│    Frozen Transformer (Base Model)                          │
-└─────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                   Controllable Self-Learning System (Continuous Learning System)  │
+│                      - Knowledge generation, validation, approval                 │
+│                      - Output: Learning Unit (LU)                                 │
+└────────────────────────────────────┬────────────────────────────────────────────┘
+                                     │
+                                     ▼
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                            Governance System                                     │
+│                      - Lifecycle decisions (CONFIRM/DEPRECATE/QUARANTINE)        │
+│                      - Conflict resolution, quality assessment                   │
+│                      - Output: Governance Decision                               │
+└────────────────────────────────────┬────────────────────────────────────────────┘
+                                     │
+                                     ▼
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                         Bridge (LU Transfer API Client)                          │
+│                      - AGAClient / AsyncAGAClient                                │
+│                      - HTTP/REST communication                                   │
+└────────────────────────────────────┬────────────────────────────────────────────┘
+                                     │
+                                     ▼
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                           AGA Portal (API Server)                                │
+│                      ★ Independent deployment - No GPU dependency ★              │
+│                      - Knowledge metadata management (CRUD)                      │
+│                      - Lifecycle state management                                │
+│                      - Audit logs                                                │
+│                      - Sync to Runtime via message queue                         │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│   [PostgreSQL/SQLite]      [Redis/Kafka]        [Runtime Registry]              │
+└────────────────────────────────────┬────────────────────────────────────────────┘
+                                     │ Sync Protocol (Redis Pub-Sub / Kafka)
+          ┌──────────────────────────┼──────────────────────────┐
+          │                          │                          │
+          ▼                          ▼                          ▼
+┌─────────────────────┐  ┌─────────────────────┐  ┌─────────────────────┐
+│   AGA Runtime #1    │  │   AGA Runtime #2    │  │   AGA Runtime #N    │
+│   (GPU Server)      │  │   (GPU Server)      │  │   (GPU Server)      │
+├─────────────────────┤  ├─────────────────────┤  ├─────────────────────┤
+│  ┌───────────────┐  │  │  ┌───────────────┐  │  │  ┌───────────────┐  │
+│  │  LLM Model    │  │  │  │  LLM Model    │  │  │  │  LLM Model    │  │
+│  │  (Frozen)     │  │  │  │  (Frozen)     │  │  │  │  (Frozen)     │  │
+│  └───────┬───────┘  │  │  └───────┬───────┘  │  │  └───────┬───────┘  │
+│          │          │  │          │          │  │          │          │
+│  ┌───────▼───────┐  │  │  ┌───────▼───────┐  │  │  ┌───────▼───────┐  │
+│  │  AGA Module   │  │  │  │  AGA Module   │  │  │  │  AGA Module   │  │
+│  │  - SlotPool   │  │  │  │  - SlotPool   │  │  │  │  - SlotPool   │  │
+│  │  - EntropyGate│  │  │  │  - EntropyGate│  │  │  │  - EntropyGate│  │
+│  │  - Decay      │  │  │  │  - Decay      │  │  │  │  - Decay      │  │
+│  └───────────────┘  │  │  └───────────────┘  │  │  └───────────────┘  │
+│  ┌───────────────┐  │  │  ┌───────────────┐  │  │  ┌───────────────┐  │
+│  │  Sync Agent   │  │  │  │  Sync Agent   │  │  │  │  Sync Agent   │  │
+│  │  (Subscribe)  │  │  │  │  (Subscribe)  │  │  │  │  (Subscribe)  │  │
+│  └───────────────┘  │  │  └───────────────┘  │  │  └───────────────┘  │
+└─────────────────────┘  └─────────────────────┘  └─────────────────────┘
 ```
 
-**AGA is Responsible for**:
+**AGA is responsible for**:
 
 -   ✅ Auxiliary attention computation (entropy gating, internal routing)
 -   ✅ Knowledge storage and retrieval (Slot Pool, persistence)
 -   ✅ Multi-instance synchronization (state replication, event broadcasting)
 -   ✅ Providing Knowledge Transfer API
 
-**AGA is NOT Responsible for** (requires external system):
+**AGA is NOT responsible for** (requires external systems):
 
--   ❌ Knowledge generation (produced by continuous learning system as Learning Units)
+-   ❌ Knowledge generation (produced by continuous self-learning system as Learning Units)
 -   ❌ Governance decisions (when to CONFIRM/DEPRECATE/QUARANTINE)
 -   ❌ Conflict resolution (how to handle contradictory knowledge)
 -   ❌ Quality assessment (value judgment of knowledge)
 -   ❌ Propagation strategy (whether/when to propagate knowledge)
 
-> For detailed architectural separation, see [docs/Architecture_Separation.md](docs/Architecture_Separation.md)
+> For detailed architecture layering, please refer to [docs/Architecture_Separation.md](docs/Architecture_Separation.md)
 
 ### 🎯 Core Features
 
-| Feature                         | Description                                                                      |
-| ------------------------------- | -------------------------------------------------------------------------------- |
-| **Zero-Training Injection**     | Knowledge written directly to buffers, no gradient computation required          |
-| **Hot-Swappable Design**        | Dynamically add/remove knowledge at runtime                                      |
-| **Lifecycle Support**           | Supports PROBATIONARY/CONFIRMED/DEPRECATED/QUARANTINED states                    |
-| **Entropy Gating**              | No intervention when primary model is confident; contributes only when uncertain |
-| **Instant Isolation**           | Problematic knowledge can be immediately removed from inference                  |
-| **Complete Traceability**       | Each knowledge slot bound to LU ID                                               |
-| **Multi-Adapter Persistence**   | SQLite/Redis/PostgreSQL layered caching                                          |
-| **Distributed Synchronization** | Multi-instance state replication and event broadcasting                          |
-| **Knowledge Transfer API**      | For external governance system integration                                       |
+| Feature                       | Description                                                                   |
+| ----------------------------- | ----------------------------------------------------------------------------- |
+| **Zero-training Injection**   | Knowledge directly written to buffer, no gradient computation needed          |
+| **Hot-pluggable Design**      | Dynamically add/remove knowledge at runtime                                   |
+| **Lifecycle Support**         | Support for PROBATIONARY/CONFIRMED/DEPRECATED/QUARANTINED states              |
+| **Entropy Gating**            | No intervention when main model is confident, contributes only when uncertain |
+| **Instant Isolation**         | Problematic knowledge can be immediately removed from affecting inference     |
+| **Complete Traceability**     | Each knowledge slot bound to LU ID                                            |
+| **Multi-adapter Persistence** | SQLite/Redis/PostgreSQL layered caching                                       |
+| **Distributed Sync**          | Multi-instance state replication and event broadcasting                       |
+| **Knowledge Transfer API**    | For external governance system integration                                    |
 
 ### 📁 Project Structure
 
@@ -1154,6 +1189,38 @@ AGA/
 │   ├── decay.py                   # Persistence decay
 │   ├── entropy_gate.py            # Entropy gating
 │   ├── exceptions.py              # Exception handling
+│   │
+│   ├── config/                    # ★ Configuration management (v3.2 new)
+│   │   ├── portal.py              # Portal configuration
+│   │   ├── runtime.py             # Runtime configuration
+│   │   ├── sync.py                # Sync protocol configuration
+│   │   └── loader.py              # YAML loader
+│   │
+│   ├── portal/                    # ★ Portal API (v3.2 new)
+│   │   ├── app.py                 # FastAPI application factory
+│   │   ├── service.py             # Business logic layer (no GPU)
+│   │   ├── routes.py              # HTTP routes
+│   │   └── registry.py            # Runtime registry
+│   │
+│   ├── runtime/                   # ★ Runtime Agent (v3.2 new)
+│   │   ├── agent.py               # Sync agent
+│   │   ├── aga_runtime.py         # Runtime inference module
+│   │   └── cache.py               # Local knowledge cache
+│   │
+│   ├── sync/                      # ★ Sync protocol (v3.2 new)
+│   │   ├── protocol.py            # Message protocol definition
+│   │   ├── publisher.py           # Message publisher
+│   │   ├── subscriber.py          # Message subscriber
+│   │   └── backends.py            # Redis/Kafka/Memory backends
+│   │
+│   ├── client/                    # ★ Client library (v3.2 new)
+│   │   └── portal_client.py       # External system integration client
+│   │
+│   ├── api/                       # REST API (monolithic deployment)
+│   │   ├── app.py                 # FastAPI application
+│   │   ├── service.py             # Service layer
+│   │   ├── routes.py              # Route layer
+│   │   └── client.py              # HTTP client
 │   │
 │   ├── operator/                  # Operator layer
 │   │   ├── aga_operator.py        # Unified AGA operator
@@ -1169,7 +1236,7 @@ AGA/
 │   │   ├── composite_adapter.py   # Composite adapter
 │   │   └── manager.py             # Persistence manager
 │   │
-│   ├── distributed/               # Distributed synchronization layer
+│   ├── distributed/               # Distributed sync layer
 │   │   ├── sync.py                # Distributed synchronizer
 │   │   ├── coordinator.py         # Instance coordinator
 │   │   ├── lock.py                # Distributed lock
@@ -1180,6 +1247,10 @@ AGA/
 │       ├── gate.py                # Three-stage gating
 │       ├── slot_pool.py           # Slot pool management
 │       └── operator.py            # Production operator
+│
+├── configs/                       # ★ Configuration file templates (v3.2 new)
+│   ├── portal_config.yaml         # Portal configuration example
+│   └── runtime_config.yaml        # Runtime configuration example
 │
 ├── llm/                           # LLM adapters
 │   └── adapters/
@@ -1194,8 +1265,10 @@ AGA/
 │   └── config.yaml                # Configuration file
 │
 ├── scripts/                       # Startup scripts
-│   ├── start_experiment_tool.sh   # Linux/macOS
-│   └── start_experiment_tool.bat  # Windows
+│   ├── start_portal.sh            # ★ Portal startup (Linux/macOS)
+│   ├── start_portal.bat           # ★ Portal startup (Windows)
+│   ├── start_experiment_tool.sh   # Experiment tool (Linux/macOS)
+│   └── start_experiment_tool.bat  # Experiment tool (Windows)
 │
 ├── tests/                         # Unit tests
 │   ├── test_core.py
@@ -1204,7 +1277,7 @@ AGA/
 │
 ├── docs/                          # Documentation
 │   ├── AGA_Implementation_Analysis.md
-│   ├── Architecture_Separation.md   # Architectural separation (important)
+│   ├── Architecture_Separation.md   # Architecture layering (important)
 │   ├── Distributed_AGA_Architecture.md
 │   ├── Governance_Framework.md
 │   └── Multi_Instance_Deployment.md
@@ -1220,11 +1293,93 @@ AGA/
 # Basic dependencies
 pip install torch transformers flask pyyaml aiosqlite
 
+# Portal API (v3.2 new)
+pip install fastapi uvicorn httpx pydantic
+
 # Production environment (optional)
 pip install redis asyncpg aiokafka
 ```
 
-#### 2. Launch Experiment Tool
+#### 2. Separated Deployment Mode (v3.2 new)
+
+**v3.2 introduces Portal + Runtime separated deployment architecture, supporting large-scale production environments.**
+
+##### 2.1 Start Portal (API service, no GPU required)
+
+```bash
+# Development mode
+./scripts/start_portal.sh --dev
+
+# Production mode (using Redis + PostgreSQL)
+./scripts/start_portal.sh --prod --redis localhost --postgres postgresql://...
+
+# Or use Python
+python -m aga.portal.app --host 0.0.0.0 --port 8081
+```
+
+Portal provides REST API, visit `http://localhost:8081/docs` to view OpenAPI documentation.
+
+##### 2.2 Start Runtime (co-deployed with LLM, requires GPU)
+
+```python
+from aga.runtime import RuntimeAgent
+from aga.config import RuntimeConfig
+
+# Create configuration
+config = RuntimeConfig.for_production(
+    instance_id="runtime-001",
+    portal_url="http://portal:8081",
+    redis_host="localhost",
+    hidden_dim=4096,
+    num_slots=100,
+)
+
+# Create Agent
+agent = RuntimeAgent(config)
+
+# Initialize and start
+await agent.initialize()
+await agent.start()
+
+# Attach to model
+aga_layer = agent.attach_to_layer(transformer_layer)
+
+# Use (in inference loop)
+output, diagnostics = agent.get_runtime().forward(hidden_states, attention_mask)
+```
+
+##### 2.3 External Governance System Integration
+
+```python
+from aga.client import AGAClient
+
+# Create client
+client = AGAClient("http://portal:8081")
+
+# Inject knowledge
+client.inject_knowledge(
+    lu_id="knowledge_001",
+    condition="When user asks about the capital of France",
+    decision="Answer Paris",
+    key_vector=[...],  # Encoded vector
+    value_vector=[...],
+    namespace="geography",
+    lifecycle_state="probationary",
+)
+
+# Confirm knowledge
+client.confirm("knowledge_001", reason="Validation passed")
+
+# Quarantine problematic knowledge
+client.quarantine("knowledge_002", reason="Error detected")
+
+# Query statistics
+stats = client.get_statistics(namespace="geography")
+```
+
+#### 3. Monolithic Deployment Mode (Traditional approach)
+
+##### 3.1 Start Experiment Tool
 
 ```bash
 # Linux/macOS
@@ -1239,7 +1394,7 @@ python -m aga_experiment_tool.app --port 8765
 
 Visit `http://localhost:8765`, default password: `aga_experiment_2026`
 
-#### 3. Code Usage
+##### 3.2 Code Usage (Monolithic mode)
 
 ```python
 from aga import AGAConfig, AGAOperator, AGAManager
@@ -1277,13 +1432,58 @@ aga.update_lifecycle(0, LifecycleState.CONFIRMED)
 print(aga.get_statistics())
 ```
 
-### 💾 Multi-Adapter Persistence
+### 🏗️ Deployment Architecture Selection
 
-AGA v3.0 supports layered caching architecture:
+AGA v3.2 provides two deployment modes:
+
+| Mode                      | Use Case                                      | Characteristics                             |
+| ------------------------- | --------------------------------------------- | ------------------------------------------- |
+| **Monolithic Deployment** | Development testing, single-machine inference | Simple, API and AGA in same process         |
+| **Separated Deployment**  | Multi-instance production, cloud-native       | Portal without GPU, Runtime scales with LLM |
+
+#### Advantages of Separated Deployment Architecture
+
+```
+┌────────────────────────────────────────────────────────────────────────┐
+│                     Separated vs Monolithic Deployment                  │
+├────────────────────────────────────────────────────────────────────────┤
+│                                                                        │
+│  Monolithic                      Separated                             │
+│  ┌──────────────────┐           ┌──────────────────┐                  │
+│  │ API + AGA + LLM  │           │ Portal (API)     │ ← No GPU         │
+│  │ (same process)   │           │ - Knowledge mgmt │                  │
+│  │                  │           │ - Audit logs     │                  │
+│  └──────────────────┘           └────────┬─────────┘                  │
+│  Pros: Simple                             │ Redis/Kafka               │
+│  Cons:                           ┌───────┼───────┐                     │
+│  - API uses GPU                  ▼       ▼       ▼                     │
+│  - Hard to scale                ┌─────┐ ┌─────┐ ┌─────┐                │
+│  - Single point                 │RT-1│ │RT-2│ │RT-N│ ← GPU           │
+│    of failure                   │+LLM│ │+LLM│ │+LLM│                  │
+│                                 └─────┘ └─────┘ └─────┘                │
+│                                 Pros:                                  │
+│                                 - Portal scales independently          │
+│                                 - Runtime scales with LLM             │
+│                                 - Fault isolation                      │
+│                                                                        │
+└────────────────────────────────────────────────────────────────────────┘
+```
+
+| Component   | Monolithic           | Separated                    |
+| ----------- | -------------------- | ---------------------------- |
+| Portal      | Same process as AGA  | Independent service (no GPU) |
+| Runtime     | N/A                  | Co-located with LLM (GPU)    |
+| Sync        | Direct memory access | Redis Pub/Sub                |
+| Persistence | Local files          | PostgreSQL                   |
+| Scalability | Vertical scaling     | Horizontal scaling           |
+
+### 💾 Multi-adapter Persistence
+
+AGA v3.0+ supports layered caching architecture:
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│              Multi-Adapter Persistence Architecture          │
+│                Multi-adapter Persistence Architecture        │
 ├─────────────────────────────────────────────────────────────┤
 │                                                             │
 │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐         │
@@ -1291,8 +1491,8 @@ AGA v3.0 supports layered caching architecture:
 │  │ (128 slots) │  │ (1000 slots)│  │ (unlimited) │         │
 │  └─────────────┘  └─────────────┘  └─────────────┘         │
 │                                                             │
-│  Read strategy: L0 → L1 → L2 (search down on miss and promote) │
-│  Write strategy: write-through (write to all layers)        │
+│  Read strategy: L0 → L1 → L2 (promote on miss)             │
+│  Write strategy: write-through (write to all layers)       │
 │                                                             │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -1341,7 +1541,7 @@ sync = DistributedSynchronizer(
 )
 await sync.start()
 
-# Synchronize knowledge injection (called by external governance system)
+# Sync knowledge injection (called by external governance system)
 await sync.sync_knowledge_inject(
     lu_id="LU_001",
     slot_idx=0,
@@ -1350,16 +1550,16 @@ await sync.sync_knowledge_inject(
     lifecycle_state=LifecycleState.PROBATIONARY,
 )
 
-# Synchronize lifecycle update
+# Sync lifecycle update
 await sync.sync_lifecycle_update("LU_001", LifecycleState.CONFIRMED)
 
-# Synchronize quarantine
+# Sync quarantine
 await sync.sync_quarantine("LU_001")
 ```
 
 ### 🔌 External Governance System Integration
 
-AGA provides Knowledge Transfer API for external governance systems (such as continuous learning systems) integration:
+AGA provides Knowledge Transfer API for external governance system (such as continuous self-learning system) integration:
 
 ```python
 # ==================== External Governance System Calls AGA ====================
@@ -1375,11 +1575,11 @@ adapter = SQLiteAdapter("aga_data.db")
 await adapter.connect()
 pm = PersistenceManager(adapter, namespace="production")
 
-# 2. Inject to AGA after external governance system produces Learning Unit
+# 2. After external governance system approves Learning Unit, inject into AGA
 def on_learning_unit_approved(lu: LearningUnit):
-    """Called when continuous learning system approves a Learning Unit"""
+    """Called when continuous self-learning system approves a Learning Unit"""
 
-    # Encode key/value (optional, AGA can also auto-encode)
+    # Encode key/value (optional, AGA can auto-encode)
     key_vector = model.encode(lu.condition)
     value_vector = model.encode(lu.decision)
 
@@ -1419,46 +1619,47 @@ def on_hit(lu_id: str, hit_count: int, context: dict):
 
 @aga.on_event("low_confidence_query")
 def on_low_confidence(query_context: dict):
-    """When AGA cannot find matching knowledge, suggest to governance system"""
+    """When AGA cannot find matching knowledge, prompt governance system"""
     governance_system.suggest_new_knowledge(query_context)
 ```
 
 #### Capabilities Governance System Needs to Implement
 
-| Capability                 | Description                                                    | AGA Support                                 |
-| -------------------------- | -------------------------------------------------------------- | ------------------------------------------- |
-| **Knowledge Generation**   | Generate LU from user interactions, feedback, external sources | `inject_knowledge()` API                    |
-| **Knowledge Verification** | Verify correctness and safety of knowledge                     | -                                           |
-| **Lifecycle Decisions**    | Decide when to CONFIRM/DEPRECATE/QUARANTINE                    | `update_lifecycle()` API                    |
-| **Conflict Resolution**    | Handle contradictory knowledge                                 | `list_knowledge()` to get similar knowledge |
-| **Quality Assessment**     | Evaluate value of knowledge                                    | `get_statistics()` to get hit statistics    |
-| **Propagation Strategy**   | Decide whether/when to propagate knowledge                     | `sync_knowledge_inject()` API               |
-| **Approval Workflow**      | Human review for high-risk knowledge                           | `update_lifecycle()` API                    |
+| Capability               | Description                                                   | AGA Support                                 |
+| ------------------------ | ------------------------------------------------------------- | ------------------------------------------- |
+| **Knowledge Generation** | Generate LU from user interaction, feedback, external sources | `inject_knowledge()` API                    |
+| **Knowledge Validation** | Validate knowledge correctness, safety                        | -                                           |
+| **Lifecycle Decisions**  | Decide when to CONFIRM/DEPRECATE/QUARANTINE                   | `update_lifecycle()` API                    |
+| **Conflict Resolution**  | Handle contradictory knowledge                                | `list_knowledge()` to get similar knowledge |
+| **Quality Assessment**   | Evaluate knowledge value                                      | `get_statistics()` to get hit statistics    |
+| **Propagation Strategy** | Decide whether/when to propagate knowledge                    | `sync_knowledge_inject()` API               |
+| **Approval Workflow**    | Human review of high-risk knowledge                           | `update_lifecycle()` API                    |
 
-#### Example: Integration with Continuous Learning System
+#### Example: Integration with Continuous Self-Learning System
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│         Continuous Learning System                          │
+│         Continuous Self-Learning System                      │
 │                                                             │
-│  User Interaction ──┐                                       │
-│                     │  ┌─────────┐      ┌─────────┐         │
-│  External Feedback ──┼─▶│ Knowledge│ ──▶ │ Governance│       │
-│                     │  │ Candidate│      │ Approval │       │
-│  Auto Extraction ────┘  │ Pool     │      └────┬────┘       │
-│                         └─────────┘           │             │
-│                                               ▼             │
-│                                   ┌─────────────────┐       │
-│                                   │ Learning Unit   │       │
-│                                   │ (Approved)      │       │
-│                                   └────────┬────────┘       │
-│                                            │                │
-└────────────────────────────────────────────┼────────────────┘
-                                             │
-                                             │ inject_knowledge()
-                                             ▼
+│  User interaction ──┐                                        │
+│                    │      ┌─────────┐      ┌─────────┐      │
+│  External feedback ──┼──▶  │Knowledge│ ──▶  │Governance│     │
+│                    │      │Candidate│      │Approval │      │
+│  Auto extraction ──┘      │Pool     │      │         │      │
+│                           └─────────┘      └────┬────┘      │
+│                                                 │            │
+│                                                 ▼            │
+│                               ┌─────────────────┐            │
+│                               │ Learning Unit   │            │
+│                               │ (Approved)      │            │
+│                               └────────┬────────┘            │
+│                                        │                     │
+└────────────────────────────────────────┼─────────────────────┘
+                                         │
+                                         │ inject_knowledge()
+                                         ▼
 ┌─────────────────────────────────────────────────────────────┐
-│                   AGA Knowledge Manager                      │
+│                    AGA Knowledge Manager                     │
 │                                                             │
 │  ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌─────────┐        │
 │  │ Slot 0  │  │ Slot 1  │  │ Slot 2  │  │  ...    │        │
@@ -1473,8 +1674,8 @@ def on_low_confidence(query_context: dict):
 └─────────────────────────────────────────────────────────────┘
 ```
 
-> `aga/distributed/governance.py` provides **reference implementation** of governance logic.
-> In production environments, it is recommended to implement these logics in your own continuous learning system.
+> `aga/distributed/governance.py` provides a **reference implementation** of governance logic,
+> but in production environments, it is recommended to implement this logic in your own continuous self-learning system.
 
 ### 📊 Knowledge Lifecycle
 
@@ -1483,7 +1684,7 @@ def on_low_confidence(query_context: dict):
                     │                                         │
                     ▼                                         │
     ┌────────────────────────┐                               │
-    │     PROBATIONARY       │──── Usage metrics normal ─────┤
+    │     PROBATIONARY       │──── Normal metrics ───────────┤
     │     (r = 0.3)          │                               │
     └───────────┬────────────┘                               │
                 │ Governance approval                         │
@@ -1495,25 +1696,25 @@ def on_low_confidence(query_context: dict):
                 │ Deprecation request                         │
                 ▼                                             │
     ┌────────────────────────┐                               │
-    │      DEPRECATED        │──── Retention period expired ─┤
+    │      DEPRECATED        │──── Retention expires ────────┤
     │     (r = 0.1)          │                               │
     └───────────┬────────────┘                               │
                 │ Cleanup                                     │
                 ▼                                             │
     ┌────────────────────────┐                               │
     │     QUARANTINED        │◀──────────────────────────────┘
-    │     (r = 0.0)          │      (Emergency quarantine can jump directly)
+    │     (r = 0.0)          │      (Emergency isolation can jump directly)
     └────────────────────────┘
 ```
 
 ### 🔌 LLM Adapters
 
-| Adapter               | Description                     | Use Case              |
-| --------------------- | ------------------------------- | --------------------- |
-| `OllamaAdapter`       | Ollama local model              | Development/Testing   |
-| `VLLMAdapter`         | vLLM high-performance inference | Production deployment |
-| `DeepSeekAdapter`     | DeepSeek API/local              | API calls             |
-| `OpenAICompatAdapter` | OpenAI compatible interface     | General               |
+| Adapter               | Description                     | Use Case   |
+| --------------------- | ------------------------------- | ---------- |
+| `OllamaAdapter`       | Ollama local models             | Dev/test   |
+| `VLLMAdapter`         | vLLM high-performance inference | Production |
+| `DeepSeekAdapter`     | DeepSeek API/local              | API calls  |
+| `OpenAICompatAdapter` | OpenAI compatible interface     | Universal  |
 
 ```python
 from llm.adapters import OllamaAdapter
@@ -1542,49 +1743,49 @@ Input: hidden_states X ∈ ℝ^{n×d}
 2. Attention scores (with reliability mask):
    scores_ij = (Q'_i · K_j^T) / √d_b + log(r_j)
 
-   where r_j is reliability of slot j (quarantined slots: r=0 → log(0)=-∞)
+   where r_j is reliability of slot j (quarantined slots r=0 → log(0)=-∞)
 
 3. Softmax retrieval:
-   α_ij = softmax(scores_i)    # Quarantined slots get weight 0
+   α_ij = softmax(scores_i)    # Quarantined slots have weight 0
    O_s = Σ_j α_ij · V_j
 
-4. Entropy gating fusion:
-   gate = σ(w₁·H + b)          # H = primary attention entropy
+4. Entropy-gated fusion:
+   gate = σ(w₁·H + b)          # H = main attention entropy
    Ô = O_primary + gate ⊙ O_s
 ```
 
-**Three-Stage Gating**:
+**Three-stage Gating**:
 
 ```
-Gate-0 (Prior Gating)  Gate-1 (Confidence Gating)  Gate-2 (Top-k Routing)
-      │                     │                           │
-      ▼                     ▼                           ▼
-  namespace/app_id      Uncertainty estimation      Top-k slot selection
-      │                     │                           │
-      ▼                     ▼                           ▼
-  DISABLED/REQUIRED    BYPASS/PASS                 Routing scores
+Gate-0 (Prior gating)     Gate-1 (Confidence gating)     Gate-2 (Top-k routing)
+      │                           │                            │
+      ▼                           ▼                            ▼
+  namespace/app_id          Uncertainty estimation        Top-k slot selection
+      │                           │                            │
+      ▼                           ▼                            ▼
+  DISABLED/REQUIRED          BYPASS/PASS                  Routing scores
 ```
 
 ### ✅ Implemented Scaling Optimizations
 
-| Optimization Solution                   | Status               | Implementation Location                       |
-| --------------------------------------- | -------------------- | --------------------------------------------- |
-| **Tiered Knowledge Storage (L0/L1/L2)** | ✅ Fully Implemented | `aga/persistence/composite_adapter.py`        |
-| **Write-through / Read-promotion**      | ✅ Fully Implemented | `CompositeAdapter`                            |
-| **Top-k Routing Optimization**          | ✅ Fully Implemented | `aga/core.py::SlotRouter`                     |
-| **Chunked Computation to Avoid OOM**    | ✅ Fully Implemented | `SlotRouter._chunked_top_k()`                 |
-| **Three-Stage Gating (Gate-0/1/2)**     | ✅ Fully Implemented | `aga/production/gate.py`                      |
-| **Multi-Source Entropy Signals**        | ✅ Fully Implemented | `aga/entropy_gate.py::EntropySource`          |
-| **Adaptive Threshold**                  | ✅ Fully Implemented | `EntropyGateConfig.enable_adaptive_threshold` |
-| **Persistence Decay**                   | ✅ Fully Implemented | `aga/decay.py::PersistenceDecay`              |
-| **Hard Reset Mechanism**                | ✅ Fully Implemented | `DecayConfig.enable_hard_reset`               |
-| **Hit Count / Consecutive Misses**      | ✅ Fully Implemented | `Slot.hit_count`, `consecutive_misses`        |
-| **Namespace Isolation**                 | ✅ Fully Implemented | `aga/production/slot_pool.py`                 |
-| **Early Exit**                          | ✅ Fully Implemented | `AGAConfig.enable_early_exit`                 |
+| Optimization                             | Status               | Implementation                                |
+| ---------------------------------------- | -------------------- | --------------------------------------------- |
+| **Layered knowledge storage (L0/L1/L2)** | ✅ Fully implemented | `aga/persistence/composite_adapter.py`        |
+| **Write-through / Read-promotion**       | ✅ Fully implemented | `CompositeAdapter`                            |
+| **Top-k routing optimization**           | ✅ Fully implemented | `aga/core.py::SlotRouter`                     |
+| **Chunked computation to avoid OOM**     | ✅ Fully implemented | `SlotRouter._chunked_top_k()`                 |
+| **Three-stage gating (Gate-0/1/2)**      | ✅ Fully implemented | `aga/production/gate.py`                      |
+| **Multi-source entropy signals**         | ✅ Fully implemented | `aga/entropy_gate.py::EntropySource`          |
+| **Adaptive thresholds**                  | ✅ Fully implemented | `EntropyGateConfig.enable_adaptive_threshold` |
+| **Persistence decay**                    | ✅ Fully implemented | `aga/decay.py::PersistenceDecay`              |
+| **Hard reset mechanism**                 | ✅ Fully implemented | `DecayConfig.enable_hard_reset`               |
+| **Hit count / Consecutive misses**       | ✅ Fully implemented | `Slot.hit_count`, `consecutive_misses`        |
+| **Namespace isolation**                  | ✅ Fully implemented | `aga/production/slot_pool.py`                 |
+| **Early Exit**                           | ✅ Fully implemented | `AGAConfig.enable_early_exit`                 |
 
 ### 🏛️ Internal Governance System
 
-AGA provides **basic internal governance capabilities** while recommending integration with external governance systems:
+AGA provides **basic internal governance capabilities**, while recommending integration with external governance systems:
 
 #### Internal Governance (Implemented)
 
@@ -1599,7 +1800,7 @@ from aga.distributed import (
 # Create governance arbiter
 arbiter = GovernanceArbiter(
     instance_id="instance-1",
-    quorum_size=2,           # Minority rule takes effect
+    quorum_size=2,           # Minority rule
     risk_threshold=0.3,      # Risk threshold
 )
 
@@ -1609,38 +1810,38 @@ arbiter.register_slot(
     trust_tier=TrustTier.S1_EXPERIENCE,  # Experience slot: rollback-able
 )
 
-# Evaluate propagation (default deny unregistered knowledge)
+# Evaluate propagation (defaults to rejecting unregistered knowledge)
 decision = await arbiter.evaluate_propagation("LU_001", "instance-2")
 if decision.verdict == GovernanceVerdict.ALLOW:
     # Allow propagation
     pass
 
 # Evaluate quarantine (quorum mechanism)
-decision = await arbiter.evaluate_quarantine("LU_001", "Anomalous output", "instance-1")
+decision = await arbiter.evaluate_quarantine("LU_001", "Abnormal output", "instance-1")
 # Automatically takes effect after reaching quorum
 ```
 
 #### Trust Tiers (Semantic Sovereignty Partitioning)
 
-| Tier                      | Propagation Policy    | Description                                    |
-| ------------------------- | --------------------- | ---------------------------------------------- |
-| **S0: Acceleration Slot** | Immediate propagation | Inference cache, lossy and rebuildable         |
-| **S1: Experience Slot**   | Delayed propagation   | 60-second observation period, rollback-able    |
-| **S2: Policy Slot**       | Gated propagation     | Requires approval (2 votes) before propagation |
-| **S3: Prohibited Slot**   | No propagation        | Read-only, no propagation to other instances   |
+| Tier                       | Propagation Policy    | Description                                              |
+| -------------------------- | --------------------- | -------------------------------------------------------- |
+| **S0: Acceleration slots** | Immediate propagation | Inference cache, lossy and rebuildable                   |
+| **S1: Experience slots**   | Delayed propagation   | 60s observation period before propagation, rollback-able |
+| **S2: Policy slots**       | Gated propagation     | Requires approval (2 votes) before propagation           |
+| **S3: Prohibited slots**   | No propagation        | Read-only, not propagated to other instances             |
 
 #### Internal vs External Governance
 
-| Capability                        | Internal Governance | External Governance (Recommended) |
-| --------------------------------- | ------------------- | --------------------------------- |
-| Trust Tier Partitioning           | ✅ Implemented      | Extensible                        |
-| Propagation Throttling            | ✅ Implemented      | Extensible                        |
-| Quorum Quarantine                 | ✅ Implemented      | Extensible                        |
-| Lifecycle Decisions               | ⚠️ Framework-level  | **Recommended External**          |
-| Knowledge Generation/Verification | ❌ Not Provided     | **Must Be External**              |
-| Conflict Resolution               | ⚠️ Policy-level     | **Recommended External**          |
-| Quality Assessment                | ⚠️ Statistics-level | **Recommended External**          |
-| Human Approval Workflow           | ❌ Not Provided     | **Must Be External**              |
+| Capability                      | Internal Governance | External Governance (Recommended) |
+| ------------------------------- | ------------------- | --------------------------------- |
+| Trust tier partitioning         | ✅ Implemented      | Extensible                        |
+| Propagation throttling          | ✅ Implemented      | Extensible                        |
+| Quorum quarantine               | ✅ Implemented      | Extensible                        |
+| Lifecycle decisions             | ⚠️ Framework-level  | **Recommended external**          |
+| Knowledge generation validation | ❌ Not provided     | **Must be external**              |
+| Conflict resolution             | ⚠️ Policy-level     | **Recommended external**          |
+| Quality assessment              | ⚠️ Statistics-level | **Recommended external**          |
+| Human approval workflow         | ❌ Not provided     | **Must be external**              |
 
 #### Recommended Integration Pattern
 
@@ -1666,65 +1867,64 @@ decision = await arbiter.evaluate_quarantine("LU_001", "Anomalous output", "inst
                            │ update_lifecycle()
                            ▼
 ┌─────────────────────────────────────────────────────────────┐
-│              AGA Internal Governance Layer                   │
+│                   AGA Internal Governance                    │
 │                                                             │
 │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐         │
 │  │ Propagation │  │ Quorum      │  │ Trust       │         │
 │  │ Throttling  │  │ Quarantine  │  │ Partitioning│         │
-│  │ (delay/rate)│  │ (minority   │  │ (S0-S3)     │         │
-│  │             │  │  rule)      │  │             │         │
+│  │ (delay/rate)│  │ (minority)  │  │ (S0-S3)     │         │
 │  └─────────────┘  └─────────────┘  └─────────────┘         │
 │                                                             │
-│  Responsibility: Execute governance decisions, not make     │
-│                  governance judgments                       │
+│  Responsibility: Execute governance decisions,              │
+│                  not make governance judgments              │
 │                                                             │
 └─────────────────────────────────────────────────────────────┘
 ```
 
-> `aga/distributed/governance.py` provides reference implementation.
-> In production environments, it is recommended to externalize governance decision logic to continuous learning systems.
+> `aga/distributed/governance.py` provides reference implementation,
+> Production environments recommend externalizing governance decision logic to the continuous self-learning system.
 
 ### ⚠️ Challenges and Solutions for Continuous Controllable Learning Systems
 
-As a **hot-swappable knowledge manager** for Transformer models, AGA faces the following core challenges in continuous controllable learning scenarios:
+AGA, as a **hot-pluggable knowledge manager** for Transformer models, faces the following core challenges in continuous controllable learning scenarios:
 
 #### Challenge 1: Knowledge Capacity Ceiling
 
 **Problem Description**:
 
 -   AGA's knowledge storage relies on explicit slots (Slot Pool)
--   Number of slots is limited by GPU memory and attention computation complexity
+-   Slot count limited by GPU memory and attention computation complexity
 -   When knowledge scale reaches 10,000+ slots, retrieval efficiency degrades
 
-**Solution**: Tiered Knowledge Storage Architecture
+**Solution**: Layered knowledge storage architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│  L0: GPU Memory Pool    Hot knowledge (256-512 slots, ns retrieval) │
-│         ↓ Dynamic swap in/out                                │
-│  L1: CPU Memory/Redis   Warm knowledge (10,000+ slots, μs retrieval) │
-│         ↓ On-demand loading                                  │
-│  L2: PostgreSQL         Cold knowledge (million+ slots, ms retrieval) │
+│  L0: GPU memory pool    Hot knowledge (256-512 slots, ns retrieval)    │
+│         ↓ Dynamic swap in/out                               │
+│  L1: CPU memory/Redis   Warm knowledge (10,000+ slots, μs retrieval)   │
+│         ↓ Load on demand                                    │
+│  L2: PostgreSQL        Cold knowledge (million slots, ms retrieval)    │
 └─────────────────────────────────────────────────────────────┘
-Key: Knowledge always maintains independent slot form, not mixed with model parameters
+Key: Knowledge always maintains independent slot form, never mixed with model parameters
 ```
 
 #### Challenge 2: Knowledge Aging and Forgetting
 
 **Problem Description**:
 
--   Knowledge has time-sensitivity; outdated knowledge needs to be forgotten
--   AGA's isolation mechanism can only "disable" but not truly forget
--   Long-term operation accumulates large amounts of DEPRECATED/QUARANTINED slots
+-   Knowledge has temporal validity, expired knowledge needs to be forgotten
+-   AGA's isolation mechanism can only "disable" rather than truly forget
+-   After long-term operation accumulates many DEPRECATED/QUARANTINED slots
 
-**Solution**: Graceful Forgetting Mechanism
+**Solution**: Graceful forgetting mechanism
 
 ```
-Forgetting process (maintaining sovereign boundaries):
+Forgetting flow (maintaining sovereign boundaries):
 1. DEPRECATED → Observation period (rollback-able)
 2. QUARANTINED → Isolation period (not participating in inference)
 3. Archive to cold storage (retain audit logs)
-4. Release slot resources (can be reused by new knowledge)
+4. Release slot resources (reusable by new knowledge)
 
 Knowledge consolidation (non-distillation):
 - Merge semantically overlapping slots
@@ -1737,26 +1937,26 @@ Knowledge consolidation (non-distillation):
 **Problem Description**:
 
 -   Multiple slots may contain contradictory knowledge
--   During inference, how to decide which to trust?
+-   How to decide which to trust during inference?
 -   Conflicts are more complex in distributed scenarios
 
-**Solution**: Slot-Level Conflict Resolution
+**Solution**: Slot-level conflict resolution
 
 ```
 Detection layer:
-  - Semantic similarity > 0.9 but different decision → Potential conflict
-  - Multiple slots for same condition → Version conflict
+  - Semantic similarity > 0.9 but different decisions → Potential conflict
+  - Same condition multiple slots → Version conflict
 
 Resolution strategies:
-  1. Time priority: Retain newest knowledge
-  2. Reliability priority: Retain slots with higher reliability
-  3. Governance priority: Mark conflict, await human adjudication
-  4. Coexistence strategy: Retain all versions, choose by context during inference
+  1. Temporal priority: Keep newest knowledge
+  2. Reliability priority: Keep slot with higher reliability
+  3. Governance priority: Flag conflict, await human judgment
+  4. Coexistence strategy: Keep all versions, select by context during inference
 
-Key: Conflict resolution at slot level, does not affect primary model
+Key: Conflict resolution at slot level, doesn't affect main model
 ```
 
-#### Challenge 4: Cross-Model Knowledge Migration
+#### Challenge 4: Cross-model Knowledge Migration
 
 **Problem Description**:
 
@@ -1764,7 +1964,7 @@ Key: Conflict resolution at slot level, does not affect primary model
 -   After changing base model, existing knowledge cannot be directly used
 -   Does this mean "retraining" is needed?
 
-**Solution**: Zero-Training Knowledge Migration
+**Solution**: Zero-training knowledge migration
 
 ```
 Retained content (migratable):
@@ -1776,7 +1976,7 @@ Regenerated content:
   - key_vector = new_model.encode(condition)
   - value_vector = new_model.encode(decision)
 
-Migration process:
+Migration flow:
   1. Export knowledge descriptions (JSON/Protobuf)
   2. Re-encode key/value on new model
   3. Maintain original governance state and lifecycle
@@ -1793,15 +1993,15 @@ Key: Migrate knowledge "meaning", not "parameters"
 -   Slot count increase → Attention computation increase
 -   May become inference bottleneck
 
-**Solution**: Inference Optimization (maintaining hot-swappable characteristics)
+**Solution**: Inference optimization (maintaining hot-pluggable characteristics)
 
 ```
-1. Early Exit (implemented): Gate-0 directly bypasses, skipping entire AGA
+1. Early Exit (implemented): Gate-0 direct bypass, skip entire AGA
 2. Sparse attention: Only compute attention for Top-k relevant slots
-3. Asynchronous prefetch: Predict and preload slots needed by next layer
+3. Async prefetch: Predict slots needed for next layer, load in advance
 4. Batch slot fusion: Merge similar slots for computation, reduce redundancy
 
-Principle: Optimization at "implementation level", does not change "architectural level"
+Principle: Optimization is at "implementation level", doesn't change "architecture level"
 ```
 
 #### Challenge 6: Adversarial Knowledge Injection
@@ -1810,27 +2010,27 @@ Principle: Optimization at "implementation level", does not change "architectura
 
 -   Malicious users may inject harmful knowledge
 -   AGA's "zero-training injection" makes attack cost lower
--   Traditional security mechanisms (such as RLHF) do not apply
+-   Traditional safety mechanisms (like RLHF) don't apply
 
-**Solution**: Knowledge Security Protection Mechanism
+**Solution**: Knowledge security protection mechanism
 
 ```
 Injection-time checks:
   - Semantic safety filtering (detect harmful content)
-  - Source verification (knowledge source credibility)
+  - Source verification (knowledge source trustworthiness)
   - Format validation (prevent injection attacks)
 
 Runtime protection:
   - Default PROBATIONARY state (reliability 0.3)
-  - Anomaly detection (output mutation → auto quarantine)
+  - Anomaly detection (output mutation → auto-isolation)
   - Impact scope limitation (propagation_radius)
 
 Governance layer safeguards:
   - Human approval workflow (S2/S3 level knowledge)
-  - Quorum voting for quarantine (minority rule takes effect)
+  - Quorum voting for isolation (minority rule)
   - Complete audit logs
 
-Key: Security is a "governance issue", not a "training issue"
+Key: Security is a "governance problem", not a "training problem"
 ```
 
 ### 🔮 Future Optimization Directions
@@ -1840,36 +2040,36 @@ Key: Security is a "governance issue", not a "training issue"
 1. **Governance Layer Enhancement**
 
     - Human governance interface (approval workflow UI)
-    - Automatic knowledge quality assessment
+    - Automated knowledge quality assessment
     - Conflict detection and resolution
 
 2. **Performance Optimization**
 
-    - GPU memory pooling and dynamic swap
+    - GPU memory pooling and dynamic swap in/out
     - Batch inference optimization
     - Cache warming strategy
 
 3. **Monitoring Enhancement**
-    - Prometheus metric export
+    - Prometheus metrics export
     - Distributed tracing
     - Anomaly detection alerts
 
-#### Medium-term Optimization (v4.0)
+#### Mid-term Optimization (v4.0)
 
-1. **Knowledge Consolidation (Non-Distillation)**
+1. **Knowledge Consolidation (non-distillation)**
 
     - Merge semantically overlapping slots
     - Knowledge compression (maintaining slot form)
     - Redundancy detection and cleanup
 
-2. **Multi-Modal Support**
+2. **Multi-modal Support**
 
     - Image knowledge injection
     - Cross-modal retrieval
     - Multi-modal gating
 
 3. **Federated Knowledge Sharing**
-    - Cross-organization knowledge synchronization
+    - Cross-organization knowledge sync
     - Privacy protection (differential privacy slots)
     - Intellectual property marking
 
@@ -1878,36 +2078,36 @@ Key: Security is a "governance issue", not a "training issue"
 1. **Cognitive Architecture**
 
     - Multi-layer knowledge representation (facts/rules/strategies)
-    - Interpretable reasoning chains
-    - Meta-cognitive capability (knowing what you don't know)
+    - Reasoning chain interpretability
+    - Meta-cognitive capabilities (knowing what it doesn't know)
 
 2. **Autonomous Governance**
 
     - Knowledge self-assessment
-    - Automatic lifecycle management
-    - Self-repair (auto quarantine detected problematic knowledge)
+    - Automated lifecycle management
+    - Self-repair (auto-isolate problematic knowledge when detected)
 
-3. **Cross-Model Knowledge Migration**
+3. **Cross-model Knowledge Migration**
     - Semantic-level knowledge export/import
     - Model-agnostic knowledge representation
     - Knowledge version control
 
-### ❌ Explicitly Excluded Directions
+### ❌ Explicitly Rejected Directions
 
 The following directions conflict with AGA's core philosophy and are **explicitly excluded from the roadmap**:
 
-| Excluded Direction                      | Exclusion Reason                                              |
-| --------------------------------------- | ------------------------------------------------------------- |
-| **Knowledge Distillation to LoRA**      | Violates "zero-training" principle, breaks sovereign boundary |
-| **Fine-tuning Base Model**              | Returns to pre-training paradigm, loses hot-swappable nature  |
-| **Merging Slots into Model Parameters** | Cannot trace or isolate individual knowledge                  |
-| **RLHF-style Alignment**                | Requires training, cannot target individual knowledge         |
+| Rejected Direction                   | Reason for Exclusion                                                    |
+| ------------------------------------ | ----------------------------------------------------------------------- |
+| **Knowledge distillation to LoRA**   | Violates "zero-training" principle, breaks sovereign boundaries         |
+| **Fine-tune base model**             | Regresses to pre-training approach, loses hot-pluggable characteristics |
+| **Fuse slots into model parameters** | Cannot trace and isolate individual knowledge                           |
+| **RLHF-style alignment**             | Requires training, cannot target individual knowledge                   |
 
 > **AGA's Core Promise**: Knowledge is always "external", always traceable, always isolatable.
 
 ### 📄 Related Papers
 
-This project is based on the paper _"Auxiliary Governed Attention: A Governable, Inference-time Auxiliary Attention Mechanism with Sovereign Boundaries for Frozen Transformers"_.
+This project is based on the paper "Auxiliary Governed Attention: A Governable, Inference-time Auxiliary Attention Mechanism with Sovereign Boundaries for Frozen Transformers".
 
 ### 📊 Code Statistics
 
