@@ -7,7 +7,8 @@
 # 示例:
 #   ./start_vllm.sh deepseek-ai/deepseek-coder-7b-instruct-v1.5 8001 1
 #   ./start_vllm.sh Qwen/Qwen2.5-7B-Instruct 8001 2
-#   ./start_vllm.sh meta-llama/Llama-2-7b-hf 8001 1
+#   ./start_vllm.sh meta-llama/Llama-3-8B-Instruct 8001 1
+#   ./start_vllm.sh mistralai/Mistral-7B-Instruct-v0.2 8001 1
 
 MODEL=${1:-deepseek-ai/deepseek-coder-7b-instruct-v1.5}
 PORT=${2:-8001}

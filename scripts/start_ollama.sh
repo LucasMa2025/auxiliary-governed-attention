@@ -8,6 +8,7 @@
 #   ./start_ollama.sh llama3.2:latest
 #   ./start_ollama.sh qwen2.5:7b
 #   ./start_ollama.sh deepseek-r1:7b
+#   ./start_ollama.sh mistral:7b
 
 MODEL=${1:-llama3.2:latest}
 
@@ -44,8 +45,13 @@ echo ""
 echo "Ollama API endpoint: http://localhost:11434"
 echo ""
 echo "To use with AGA Experiment Tool:"
-echo "  1. Start the experiment tool: python aga_experiment_tool/app.py"
-echo "  2. Use LLM adapter: OllamaAdapter(model='$MODEL')"
+echo "  1. Start the experiment tool: ./scripts/start_experiment_tool.sh"
+echo "  2. Access: http://localhost:8765"
+echo "  3. Select model: $MODEL"
+echo ""
+echo "To use programmatically:"
+echo "  from llm.adapters import OllamaAdapter"
+echo "  adapter = OllamaAdapter(model='$MODEL')"
 echo ""
 echo "Available models:"
 ollama list
