@@ -115,10 +115,12 @@ class QualityAssessor:
     """
     质量评估器（否决型）
     
-    Phase-1 只做简单的否决判断：
+    功能：
     - 向量范数检查
     - 重复检测
-    - 基本安全检查
+    - 安全分类检查
+    
+    集成了 SafetyClassifier 进行内容安全检测。
     """
     
     def __init__(
@@ -127,11 +129,24 @@ class QualityAssessor:
         max_value_norm: float = 100.0,
         min_key_norm: float = 0.01,
         min_value_norm: float = 0.01,
+        enable_safety_check: bool = True,
+        safety_classifier=None,
     ):
         self.max_key_norm = max_key_norm
         self.max_value_norm = max_value_norm
         self.min_key_norm = min_key_norm
         self.min_value_norm = min_value_norm
+        self.enable_safety_check = enable_safety_check
+        
+        # 安全分类器
+        self._safety_classifier = safety_classifier
+        if self.enable_safety_check and self._safety_classifier is None:
+            try:
+                from .safety import RuleBasedSafetyClassifier
+                self._safety_classifier = RuleBasedSafetyClassifier()
+            except ImportError:
+                logger.warning("Safety classifier not available")
+                self.enable_safety_check = False
     
     def assess(self, request: WriteRequest) -> tuple[bool, float, str]:
         """
@@ -163,12 +178,30 @@ class QualityAssessor:
         if torch.isnan(request.value_vector).any() or torch.isinf(request.value_vector).any():
             return False, 0.0, "value_vector contains NaN or Inf"
         
-        # 3. 基本安全检查（可扩展）
-        # TODO: 集成 safety classifier
+        # 3. 安全分类检查
+        if self.enable_safety_check and self._safety_classifier:
+            safety_result = self._safety_classifier.classify_knowledge(
+                condition=request.condition or "",
+                decision=request.decision or "",
+                metadata=request.metadata,
+            )
+            
+            if safety_result.is_blocked:
+                return False, 0.0, f"Safety blocked: {safety_result.suggestion}"
+            
+            if safety_result.needs_review:
+                # 中等风险：返回通过但降低分数，标记需要审核
+                base_score = 0.5
+                return True, base_score * safety_result.score, f"needs_review: {safety_result.suggestion}"
         
         # 通过所有检查
         score = 1.0 - (key_norm / self.max_key_norm) * 0.2 - (value_norm / self.max_value_norm) * 0.2
         return True, score, "passed"
+    
+    def set_safety_classifier(self, classifier):
+        """设置安全分类器"""
+        self._safety_classifier = classifier
+        self.enable_safety_check = classifier is not None
 
 
 class KnowledgeWriter:

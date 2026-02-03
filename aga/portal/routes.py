@@ -26,7 +26,7 @@ from .service import PortalService
 if HAS_FASTAPI:
     
     class InjectRequest(BaseModel):
-        """知识注入请求"""
+        """知识注入请求（包含向量，供内部使用）"""
         lu_id: str = Field(..., description="Learning Unit ID")
         key_vector: List[float] = Field(..., description="条件编码向量")
         value_vector: List[float] = Field(..., description="决策编码向量")
@@ -37,8 +37,37 @@ if HAS_FASTAPI:
         trust_tier: Optional[str] = Field(default=None, description="信任层级")
         metadata: Optional[dict] = Field(default=None, description="扩展元数据")
     
+    class InjectTextRequest(BaseModel):
+        """
+        文本知识注入请求（推荐）
+        
+        治理系统应使用此 API，由 Portal 负责编码。
+        
+        架构原则：
+        - 治理系统 = 规则与授权的"主权层"，只传递语义描述
+        - AGA Portal = 规则被执行的"计算层"，负责 KV 编码
+        
+        这样保证：
+        1. 编码器一致性（注入与推理使用同一编码器）
+        2. 治理系统与模型解耦
+        3. 规则文本可审计
+        """
+        lu_id: str = Field(..., description="Learning Unit ID")
+        condition: str = Field(..., description="触发条件描述（文本）")
+        decision: str = Field(..., description="决策描述（文本）")
+        namespace: str = Field(default="default", description="命名空间")
+        lifecycle_state: str = Field(default="probationary", description="初始状态")
+        trust_tier: Optional[str] = Field(default=None, description="信任层级")
+        metadata: Optional[dict] = Field(default=None, description="扩展元数据")
+    
+    class BatchInjectTextRequest(BaseModel):
+        """批量文本注入请求"""
+        items: List[InjectTextRequest] = Field(..., description="知识列表")
+        namespace: str = Field(default="default", description="默认命名空间")
+        skip_duplicates: bool = Field(default=True, description="跳过重复")
+    
     class BatchInjectRequest(BaseModel):
-        """批量注入请求"""
+        """批量注入请求（包含向量，供内部使用）"""
         items: List[InjectRequest] = Field(..., description="知识列表")
         namespace: str = Field(default="default", description="默认命名空间")
         skip_duplicates: bool = Field(default=True, description="跳过重复")
@@ -106,7 +135,12 @@ def create_portal_routers(service: PortalService):
     
     @knowledge_router.post("/inject")
     async def inject_knowledge(request: InjectRequest):
-        """注入知识"""
+        """
+        注入知识（包含向量）
+        
+        ⚠️ 内部使用：此 API 要求调用方提供预编码的向量。
+        治理系统应使用 /inject-text API。
+        """
         result = await service.inject_knowledge(
             lu_id=request.lu_id,
             key_vector=request.key_vector,
@@ -120,11 +154,54 @@ def create_portal_routers(service: PortalService):
         )
         return APIResponse(success=result["success"], data=result)
     
+    @knowledge_router.post("/inject-text")
+    async def inject_knowledge_text(request: InjectTextRequest):
+        """
+        注入知识（文本，Portal 负责编码）
+        
+        ✅ 推荐 API：治理系统应使用此端点。
+        
+        Portal 会使用配置的编码器将文本转换为向量，确保：
+        1. 编码器一致性（与推理时使用相同编码器）
+        2. 治理系统与模型解耦
+        3. 规则文本可审计
+        """
+        result = await service.inject_knowledge_text(
+            lu_id=request.lu_id,
+            condition=request.condition,
+            decision=request.decision,
+            namespace=request.namespace,
+            lifecycle_state=request.lifecycle_state,
+            trust_tier=request.trust_tier,
+            metadata=request.metadata,
+        )
+        return APIResponse(success=result["success"], data=result)
+    
     @knowledge_router.post("/batch")
     async def batch_inject(request: BatchInjectRequest):
-        """批量注入"""
+        """
+        批量注入（包含向量）
+        
+        ⚠️ 内部使用：此 API 要求调用方提供预编码的向量。
+        治理系统应使用 /batch-text API。
+        """
         items = [item.dict() for item in request.items]
         result = await service.batch_inject(
+            items=items,
+            namespace=request.namespace,
+            skip_duplicates=request.skip_duplicates,
+        )
+        return APIResponse(success=True, data=result)
+    
+    @knowledge_router.post("/batch-text")
+    async def batch_inject_text(request: BatchInjectTextRequest):
+        """
+        批量注入（文本，Portal 负责编码）
+        
+        ✅ 推荐 API：治理系统应使用此端点。
+        """
+        items = [item.dict() for item in request.items]
+        result = await service.batch_inject_text(
             items=items,
             namespace=request.namespace,
             skip_duplicates=request.skip_duplicates,

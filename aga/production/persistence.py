@@ -31,13 +31,17 @@ AGA 生产级持久化层 (单机部署模式)
 - Redis: 热槽位缓存 (同步客户端)
 - PostgreSQL: 冷存储 + 审计日志 (SQLAlchemy)
 - 混合模式: Redis + PostgreSQL
+
+新增功能：
+- Redis→PostgreSQL 增量同步
+- Prometheus 指标导出
 """
 import json
 import time
 import logging
 import threading
 from abc import ABC, abstractmethod
-from typing import Optional, List, Dict, Any, Tuple
+from typing import Optional, List, Dict, Any, Tuple, Callable
 from dataclasses import dataclass
 from datetime import datetime
 from contextlib import contextmanager
@@ -46,6 +50,179 @@ from .config import PersistenceConfig
 from .slot_pool import Slot, LifecycleState
 
 logger = logging.getLogger(__name__)
+
+
+# ============== Prometheus 指标 ==============
+
+class PrometheusMetrics:
+    """
+    Prometheus 指标导出器
+    
+    导出 AGA 持久化层的关键指标：
+    - 槽位数量 (按命名空间和状态)
+    - 命中计数
+    - 持久化操作延迟
+    - 同步状态
+    """
+    
+    _instance = None
+    _lock = threading.Lock()
+    
+    def __new__(cls):
+        if cls._instance is None:
+            with cls._lock:
+                if cls._instance is None:
+                    cls._instance = super().__new__(cls)
+                    cls._instance._initialized = False
+        return cls._instance
+    
+    def __init__(self):
+        if self._initialized:
+            return
+        
+        self._metrics = {}
+        self._collectors = []
+        self._prometheus_available = False
+        
+        try:
+            from prometheus_client import Counter, Gauge, Histogram, CollectorRegistry, REGISTRY
+            self._prometheus_available = True
+            self._registry = REGISTRY
+            
+            # 定义指标
+            self._init_metrics()
+            
+        except ImportError:
+            logger.info("prometheus_client not installed, metrics disabled")
+        
+        self._initialized = True
+    
+    def _init_metrics(self):
+        """初始化 Prometheus 指标"""
+        from prometheus_client import Counter, Gauge, Histogram
+        
+        # 槽位数量 (gauge)
+        self._metrics["slots_total"] = Gauge(
+            "aga_slots_total",
+            "Total number of slots",
+            ["namespace", "lifecycle_state"]
+        )
+        
+        # 活跃槽位数量
+        self._metrics["slots_active"] = Gauge(
+            "aga_slots_active",
+            "Number of active (non-quarantined) slots",
+            ["namespace"]
+        )
+        
+        # 操作计数 (counter)
+        self._metrics["operations_total"] = Counter(
+            "aga_persistence_operations_total",
+            "Total number of persistence operations",
+            ["namespace", "operation", "status"]
+        )
+        
+        # 操作延迟 (histogram)
+        self._metrics["operation_duration_seconds"] = Histogram(
+            "aga_persistence_operation_duration_seconds",
+            "Persistence operation duration in seconds",
+            ["namespace", "operation"],
+            buckets=(0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0)
+        )
+        
+        # 命中计数 (counter)
+        self._metrics["hits_total"] = Counter(
+            "aga_slot_hits_total",
+            "Total slot hits",
+            ["namespace"]
+        )
+        
+        # 同步状态
+        self._metrics["sync_last_success"] = Gauge(
+            "aga_sync_last_success_timestamp",
+            "Timestamp of last successful sync"
+        )
+        
+        self._metrics["sync_records_synced"] = Counter(
+            "aga_sync_records_synced_total",
+            "Total records synced from Redis to PostgreSQL"
+        )
+        
+        self._metrics["sync_errors"] = Counter(
+            "aga_sync_errors_total",
+            "Total sync errors"
+        )
+    
+    @property
+    def enabled(self) -> bool:
+        """是否启用指标"""
+        return self._prometheus_available
+    
+    def record_slot_count(self, namespace: str, state: str, count: int):
+        """记录槽位数量"""
+        if not self.enabled:
+            return
+        self._metrics["slots_total"].labels(
+            namespace=namespace, 
+            lifecycle_state=state
+        ).set(count)
+    
+    def record_active_slots(self, namespace: str, count: int):
+        """记录活跃槽位数量"""
+        if not self.enabled:
+            return
+        self._metrics["slots_active"].labels(namespace=namespace).set(count)
+    
+    def record_operation(
+        self, 
+        namespace: str, 
+        operation: str, 
+        status: str, 
+        duration: float
+    ):
+        """记录持久化操作"""
+        if not self.enabled:
+            return
+        self._metrics["operations_total"].labels(
+            namespace=namespace,
+            operation=operation,
+            status=status
+        ).inc()
+        self._metrics["operation_duration_seconds"].labels(
+            namespace=namespace,
+            operation=operation
+        ).observe(duration)
+    
+    def record_hits(self, namespace: str, count: int = 1):
+        """记录命中"""
+        if not self.enabled:
+            return
+        self._metrics["hits_total"].labels(namespace=namespace).inc(count)
+    
+    def record_sync_success(self, records_synced: int):
+        """记录同步成功"""
+        if not self.enabled:
+            return
+        self._metrics["sync_last_success"].set(time.time())
+        self._metrics["sync_records_synced"].inc(records_synced)
+    
+    def record_sync_error(self):
+        """记录同步错误"""
+        if not self.enabled:
+            return
+        self._metrics["sync_errors"].inc()
+    
+    def get_text_metrics(self) -> str:
+        """获取文本格式的指标（用于 HTTP 端点）"""
+        if not self.enabled:
+            return "# Prometheus metrics not available\n"
+        
+        from prometheus_client import generate_latest
+        return generate_latest(self._registry).decode("utf-8")
+
+
+# 全局指标实例
+metrics = PrometheusMetrics()
 
 
 # ============== 抽象基类 ==============
@@ -154,6 +331,7 @@ class RedisPersistence(BasePersistence):
     
     def save_slot(self, namespace: str, slot: Slot) -> bool:
         """保存槽位到 Redis"""
+        start_time = time.time()
         try:
             key = self._slot_key(namespace)
             data = json.dumps(slot.to_dict())
@@ -171,9 +349,15 @@ class RedisPersistence(BasePersistence):
             # 发布变更通知
             self._publish_change(namespace, "save", slot.lu_id)
             
+            # 记录指标
+            duration = time.time() - start_time
+            metrics.record_operation(namespace, "save", "success", duration)
+            
             return True
         except Exception as e:
             logger.error(f"Failed to save slot to Redis: {e}")
+            duration = time.time() - start_time
+            metrics.record_operation(namespace, "save", "error", duration)
             return False
     
     def save_slots_batch(self, namespace: str, slots: List[Slot]) -> int:
@@ -308,6 +492,9 @@ class RedisPersistence(BasePersistence):
         try:
             key = self._slot_key(namespace)
             count = self.client.hlen(key)
+            
+            # 更新 Prometheus 指标
+            metrics.record_active_slots(namespace, count)
             
             return {
                 "backend": "redis",
@@ -869,13 +1056,221 @@ class PersistenceManager:
         """同步循环"""
         while not self._stop_sync.is_set():
             try:
-                # 定期从 Redis 同步到 PostgreSQL
-                # TODO: 实现增量同步逻辑
-                pass
+                # 从 Redis 同步到 PostgreSQL（增量同步）
+                self._sync_redis_to_postgres()
             except Exception as e:
                 logger.error(f"Sync error: {e}")
             
             self._stop_sync.wait(self.config.sync_interval_seconds)
+    
+    def _sync_redis_to_postgres(self):
+        """
+        Redis → PostgreSQL 增量同步
+        
+        策略：
+        1. 获取 Redis 中所有命名空间
+        2. 对比 Redis 和 PostgreSQL 的版本号
+        3. 只同步有变更的记录（version 不一致）
+        4. 同步命中计数增量
+        """
+        if not (self.persistence.redis and self.persistence.postgres):
+            return
+        
+        redis = self.persistence.redis
+        postgres = self.persistence.postgres
+        
+        try:
+            # 获取所有命名空间
+            namespaces = self._get_all_namespaces_from_redis()
+            
+            sync_stats = {
+                "total_synced": 0,
+                "total_skipped": 0,
+                "total_errors": 0,
+            }
+            
+            for namespace in namespaces:
+                ns_stats = self._sync_namespace(namespace, redis, postgres)
+                sync_stats["total_synced"] += ns_stats["synced"]
+                sync_stats["total_skipped"] += ns_stats["skipped"]
+                sync_stats["total_errors"] += ns_stats["errors"]
+            
+            if sync_stats["total_synced"] > 0:
+                logger.info(f"Redis→PostgreSQL sync complete: {sync_stats}")
+                
+        except Exception as e:
+            logger.error(f"Redis→PostgreSQL sync failed: {e}")
+    
+    def _get_all_namespaces_from_redis(self) -> List[str]:
+        """从 Redis 获取所有命名空间"""
+        try:
+            redis = self.persistence.redis
+            pattern = f"{redis.config.redis_key_prefix}:*:slots"
+            keys = redis.client.keys(pattern)
+            
+            namespaces = []
+            for key in keys:
+                # 解析 namespace: aga:{namespace}:slots
+                parts = key.split(":")
+                if len(parts) >= 3:
+                    namespaces.append(parts[1])
+            
+            return list(set(namespaces))
+        except Exception as e:
+            logger.warning(f"Failed to get namespaces from Redis: {e}")
+            return []
+    
+    def _sync_namespace(
+        self, 
+        namespace: str, 
+        redis: RedisPersistence, 
+        postgres: PostgreSQLPersistence
+    ) -> Dict[str, int]:
+        """同步单个命名空间"""
+        stats = {"synced": 0, "skipped": 0, "errors": 0}
+        
+        try:
+            # 1. 获取 Redis 中的所有槽位
+            redis_slots = redis.load_active_slots(namespace)
+            # 也加载隔离的，确保状态同步
+            redis_key = redis._slot_key(namespace)
+            all_redis_data = redis.client.hgetall(redis_key)
+            
+            redis_slots_map = {}
+            for lu_id, data_str in all_redis_data.items():
+                slot_data = json.loads(data_str)
+                redis_slots_map[lu_id] = slot_data
+            
+            # 2. 获取 PostgreSQL 中的版本映射
+            pg_versions = self._get_pg_versions(namespace, postgres)
+            
+            # 3. 对比并同步
+            for lu_id, redis_data in redis_slots_map.items():
+                try:
+                    redis_version = redis_data.get("version", 1)
+                    redis_updated = redis_data.get("updated_at", 0)
+                    
+                    pg_info = pg_versions.get(lu_id, {"version": 0, "updated_at": 0})
+                    pg_version = pg_info["version"]
+                    
+                    # 如果 Redis 版本更新，同步到 PostgreSQL
+                    if redis_version > pg_version or redis_updated > pg_info["updated_at"]:
+                        if self._sync_slot_to_postgres(namespace, redis_data, postgres):
+                            stats["synced"] += 1
+                        else:
+                            stats["errors"] += 1
+                    else:
+                        stats["skipped"] += 1
+                        
+                except Exception as e:
+                    logger.warning(f"Failed to sync slot {lu_id}: {e}")
+                    stats["errors"] += 1
+            
+            # 4. 同步命中计数增量（高频数据）
+            self._sync_hit_counts(namespace, redis_slots_map, postgres)
+            
+        except Exception as e:
+            logger.error(f"Failed to sync namespace {namespace}: {e}")
+            stats["errors"] += 1
+        
+        return stats
+    
+    def _get_pg_versions(
+        self, 
+        namespace: str, 
+        postgres: PostgreSQLPersistence
+    ) -> Dict[str, Dict[str, Any]]:
+        """获取 PostgreSQL 中的版本信息"""
+        try:
+            from sqlalchemy import text
+            
+            with postgres._get_session() as session:
+                sql = text("""
+                SELECT lu_id, version, EXTRACT(EPOCH FROM updated_at) as updated_at
+                FROM aga_slots WHERE namespace = :namespace
+                """)
+                result = session.execute(sql, {"namespace": namespace})
+                
+                return {
+                    row.lu_id: {
+                        "version": row.version,
+                        "updated_at": row.updated_at or 0
+                    }
+                    for row in result.fetchall()
+                }
+        except Exception as e:
+            logger.warning(f"Failed to get PG versions: {e}")
+            return {}
+    
+    def _sync_slot_to_postgres(
+        self, 
+        namespace: str, 
+        redis_data: Dict[str, Any], 
+        postgres: PostgreSQLPersistence
+    ) -> bool:
+        """同步单个槽位到 PostgreSQL"""
+        try:
+            from sqlalchemy import text
+            import torch
+            
+            # 构建 Slot 对象
+            slot = Slot(
+                slot_idx=redis_data.get("slot_idx", 0),
+                lu_id=redis_data["lu_id"],
+                key_vector=torch.tensor(redis_data["key_vector"]),
+                value_vector=torch.tensor(redis_data["value_vector"]),
+                lifecycle_state=LifecycleState(redis_data["lifecycle_state"]),
+                namespace=namespace,
+                condition=redis_data.get("condition"),
+                decision=redis_data.get("decision"),
+                hit_count=redis_data.get("hit_count", 0),
+                consecutive_misses=redis_data.get("consecutive_misses", 0),
+                last_hit_ts=redis_data.get("last_hit_ts", time.time()),
+                created_at=redis_data.get("created_at", time.time()),
+                updated_at=redis_data.get("updated_at", time.time()),
+                version=redis_data.get("version", 1),
+            )
+            
+            return postgres.save_slot(namespace, slot)
+        except Exception as e:
+            logger.warning(f"Failed to sync slot to PostgreSQL: {e}")
+            return False
+    
+    def _sync_hit_counts(
+        self, 
+        namespace: str, 
+        redis_slots: Dict[str, Dict[str, Any]], 
+        postgres: PostgreSQLPersistence
+    ):
+        """同步命中计数到 PostgreSQL"""
+        try:
+            from sqlalchemy import text
+            
+            with postgres._get_session() as session:
+                for lu_id, data in redis_slots.items():
+                    redis_hit_count = data.get("hit_count", 0)
+                    
+                    # 更新 PostgreSQL 中的命中计数（取较大值）
+                    sql = text("""
+                    UPDATE aga_slots 
+                    SET hit_count = GREATEST(hit_count, :hit_count),
+                        last_hit_ts = COALESCE(
+                            CASE WHEN :hit_count > hit_count 
+                                 THEN to_timestamp(:last_hit_ts) 
+                                 ELSE last_hit_ts 
+                            END, 
+                            last_hit_ts
+                        )
+                    WHERE namespace = :namespace AND lu_id = :lu_id
+                    """)
+                    session.execute(sql, {
+                        "namespace": namespace,
+                        "lu_id": lu_id,
+                        "hit_count": redis_hit_count,
+                        "last_hit_ts": data.get("last_hit_ts", time.time()),
+                    })
+        except Exception as e:
+            logger.warning(f"Failed to sync hit counts: {e}")
     
     def save_slot(self, namespace: str, slot: Slot) -> bool:
         """保存槽位"""

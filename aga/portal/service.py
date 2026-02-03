@@ -2,17 +2,29 @@
 AGA Portal 服务层
 
 核心业务逻辑，不包含 AGA 推理实例。
+
+架构说明：
+    Portal 是知识管理的"计算层"，负责：
+    - 接收治理系统的文本规则
+    - 使用编码器将文本转换为 KV 向量
+    - 存储和同步知识到 Runtime
+    
+    治理系统（主权层）只需传递语义描述，不涉及向量编码。
+    这确保了编码器一致性和系统解耦。
 """
 
 import asyncio
 import logging
 import time
 from datetime import datetime
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, TYPE_CHECKING
 
 from ..config.portal import PortalConfig
 from ..persistence import PersistenceAdapter, SQLiteAdapter, create_adapter
 from ..sync import SyncPublisher, SyncMessage, MessageType
+
+if TYPE_CHECKING:
+    from ..encoder import BaseEncoder
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +59,7 @@ class PortalService:
         # 组件（延迟初始化）
         self._persistence: Optional[PersistenceAdapter] = None
         self._publisher: Optional[SyncPublisher] = None
+        self._encoder: Optional["BaseEncoder"] = None
         
         # 状态
         self._initialized = False
@@ -55,6 +68,7 @@ class PortalService:
         # 统计
         self._stats = {
             "inject_count": 0,
+            "inject_text_count": 0,
             "update_count": 0,
             "quarantine_count": 0,
             "query_count": 0,
@@ -70,6 +84,9 @@ class PortalService:
         
         # 初始化消息发布器
         await self._init_publisher()
+        
+        # 初始化编码器
+        await self._init_encoder()
         
         self._initialized = True
         logger.info("PortalService initialized")
@@ -133,6 +150,55 @@ class PortalService:
         
         await self._publisher.connect()
         logger.info(f"Publisher initialized: {messaging_config.backend}")
+    
+    async def _init_encoder(self):
+        """
+        初始化编码器
+        
+        编码器用于将文本转换为 KV 向量。
+        这是 Portal 的核心职责之一，确保编码器一致性。
+        """
+        from ..encoder import EncoderFactory, EncoderConfig
+        
+        encoder_config = getattr(self.config, 'encoder', None)
+        
+        if encoder_config:
+            # 从配置创建
+            self._encoder = EncoderFactory.create(encoder_config)
+        else:
+            # 尝试从环境变量创建，或使用最佳可用
+            try:
+                self._encoder = EncoderFactory.create_from_env()
+            except Exception:
+                self._encoder = EncoderFactory.create_best_available(
+                    key_dim=getattr(self.config, 'key_dim', 64),
+                    value_dim=getattr(self.config, 'value_dim', 4096),
+                )
+        
+        # 初始化编码器
+        self._encoder.initialize()
+        
+        logger.info(
+            f"Encoder initialized: {self._encoder.encoder_type.value} "
+            f"(native_dim={self._encoder.native_dim}, "
+            f"key_dim={self._encoder.key_dim}, "
+            f"value_dim={self._encoder.value_dim})"
+        )
+    
+    @property
+    def encoder(self) -> "BaseEncoder":
+        """获取编码器"""
+        if self._encoder is None:
+            raise RuntimeError("Encoder not initialized. Call initialize() first.")
+        return self._encoder
+    
+    def get_encoder_signature(self) -> Dict[str, Any]:
+        """
+        获取编码器签名
+        
+        治理系统可以查询此签名以了解 Portal 使用的编码器配置。
+        """
+        return self.encoder.get_signature().to_dict()
     
     # ==================== 知识管理 ====================
     
@@ -219,6 +285,110 @@ class PortalService:
             "namespace": namespace,
             "lifecycle_state": lifecycle_state,
             "sync_result": sync_result,
+        }
+    
+    async def inject_knowledge_text(
+        self,
+        lu_id: str,
+        condition: str,
+        decision: str,
+        namespace: str = "default",
+        lifecycle_state: str = "probationary",
+        trust_tier: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """
+        注入知识（文本形式，Portal 负责编码）
+        
+        ✅ 推荐 API：治理系统应使用此方法。
+        
+        流程：
+        1. 使用编码器将 condition/decision 转换为 KV 向量
+        2. 调用 inject_knowledge 完成注入
+        
+        架构优势：
+        - 治理系统只需传递语义描述，不涉及向量编码
+        - 编码器一致性由 Portal 保证
+        - 规则文本可审计
+        
+        Args:
+            lu_id: Learning Unit ID
+            condition: 触发条件描述（文本）
+            decision: 决策描述（文本）
+            namespace: 命名空间
+            lifecycle_state: 初始生命周期状态
+            trust_tier: 信任层级
+            metadata: 扩展元数据
+        
+        Returns:
+            注入结果
+        """
+        self._stats["inject_text_count"] += 1
+        
+        # 使用编码器将文本转换为向量
+        key_vector, value_vector = self.encoder.encode_constraint(condition, decision)
+        
+        # 在 metadata 中记录编码器签名（用于审计和一致性验证）
+        enriched_metadata = metadata.copy() if metadata else {}
+        enriched_metadata["encoder_signature"] = self.get_encoder_signature()
+        enriched_metadata["encoded_by"] = "portal"
+        
+        # 调用原有的注入方法
+        return await self.inject_knowledge(
+            lu_id=lu_id,
+            key_vector=key_vector,
+            value_vector=value_vector,
+            condition=condition,
+            decision=decision,
+            namespace=namespace,
+            lifecycle_state=lifecycle_state,
+            trust_tier=trust_tier,
+            metadata=enriched_metadata,
+        )
+    
+    async def batch_inject_text(
+        self,
+        items: List[Dict[str, Any]],
+        namespace: str = "default",
+        skip_duplicates: bool = True,
+    ) -> Dict[str, Any]:
+        """
+        批量注入知识（文本形式，Portal 负责编码）
+        
+        ✅ 推荐 API：治理系统应使用此方法。
+        """
+        results = []
+        success_count = 0
+        failed_count = 0
+        
+        for item in items:
+            try:
+                result = await self.inject_knowledge_text(
+                    lu_id=item["lu_id"],
+                    condition=item["condition"],
+                    decision=item["decision"],
+                    namespace=item.get("namespace", namespace),
+                    lifecycle_state=item.get("lifecycle_state", "probationary"),
+                    trust_tier=item.get("trust_tier"),
+                    metadata=item.get("metadata"),
+                )
+                results.append(result)
+                success_count += 1
+            except Exception as e:
+                if not skip_duplicates:
+                    raise
+                results.append({
+                    "success": False,
+                    "lu_id": item["lu_id"],
+                    "error": str(e),
+                })
+                failed_count += 1
+        
+        return {
+            "total": len(items),
+            "success_count": success_count,
+            "failed_count": failed_count,
+            "results": results,
         }
     
     async def batch_inject(
@@ -537,6 +707,17 @@ class PortalService:
     
     async def health_check(self) -> Dict[str, Any]:
         """健康检查"""
+        encoder_info = None
+        if self._encoder:
+            encoder_info = {
+                "type": self._encoder.encoder_type.value,
+                "model": self._encoder.model_name,
+                "native_dim": self._encoder.native_dim,
+                "key_dim": self._encoder.key_dim,
+                "value_dim": self._encoder.value_dim,
+                "is_available": self._encoder.is_available,
+            }
+        
         return {
             "status": "healthy" if self._initialized else "not_initialized",
             "version": self.config.version,
@@ -545,4 +726,5 @@ class PortalService:
             "stats": self._stats,
             "persistence": self._persistence.__class__.__name__ if self._persistence else None,
             "publisher": self._publisher.get_stats() if self._publisher else None,
+            "encoder": encoder_info,
         }

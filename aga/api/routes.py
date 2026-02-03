@@ -17,7 +17,9 @@ except ImportError:
 
 from .models import (
     InjectKnowledgeRequest,
+    InjectKnowledgeTextRequest,
     BatchInjectRequest,
+    BatchInjectTextRequest,
     UpdateLifecycleRequest,
     BatchUpdateLifecycleRequest,
     QuarantineRequest,
@@ -100,9 +102,10 @@ def create_routers(service: AGAService = None):
         svc: AGAService = Depends(get_service),
     ):
         """
-        注入单条知识
+        注入单条知识（包含向量）
         
-        将知识注入到 AGA 系统中。
+        ⚠️ 内部使用：此 API 要求调用方提供预编码的向量。
+        治理系统应使用 /inject-text API。
         
         - **lu_id**: Learning Unit 唯一标识
         - **namespace**: 命名空间（用于租户隔离）
@@ -132,15 +135,55 @@ def create_routers(service: AGAService = None):
             logger.error(f"Inject knowledge failed: {e}")
             raise HTTPException(status_code=500, detail=str(e))
     
+    @knowledge_router.post("/inject-text")
+    async def inject_knowledge_text(
+        request: InjectKnowledgeTextRequest,
+        svc: AGAService = Depends(get_service),
+    ):
+        """
+        注入单条知识（文本，服务负责编码）
+        
+        ✅ 推荐 API：治理系统应使用此端点。
+        
+        服务会使用配置的编码器将文本转换为向量，确保：
+        1. 编码器一致性（与推理时使用相同编码器）
+        2. 治理系统与模型解耦
+        3. 规则文本可审计
+        
+        - **lu_id**: Learning Unit 唯一标识
+        - **namespace**: 命名空间（用于租户隔离）
+        - **condition**: 触发条件描述（文本）
+        - **decision**: 决策/动作描述（文本）
+        - **lifecycle_state**: 初始生命周期状态
+        """
+        try:
+            return await svc.inject_knowledge_text(
+                namespace=request.namespace,
+                lu_id=request.lu_id,
+                condition=request.condition,
+                decision=request.decision,
+                lifecycle_state=request.lifecycle_state.value,
+                trust_tier=request.trust_tier.value if request.trust_tier else None,
+                metadata=request.metadata,
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except RuntimeError as e:
+            raise HTTPException(status_code=503, detail=str(e))
+        except Exception as e:
+            logger.error(f"Inject knowledge text failed: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+    
     @knowledge_router.post("/inject/batch", response_model=BatchResultResponse)
     async def batch_inject(
         request: BatchInjectRequest,
         svc: AGAService = Depends(get_service),
     ):
         """
-        批量注入知识
+        批量注入知识（包含向量）
         
-        一次性注入多条知识，提高效率。
+        ⚠️ 内部使用：此 API 要求调用方提供预编码的向量。
+        治理系统应使用 /inject-text/batch API。
         """
         try:
             items = [
@@ -164,6 +207,38 @@ def create_routers(service: AGAService = None):
             )
         except Exception as e:
             logger.error(f"Batch inject failed: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+    
+    @knowledge_router.post("/inject-text/batch", response_model=BatchResultResponse)
+    async def batch_inject_text(
+        request: BatchInjectTextRequest,
+        svc: AGAService = Depends(get_service),
+    ):
+        """
+        批量注入知识（文本，服务负责编码）
+        
+        ✅ 推荐 API：治理系统应使用此端点。
+        """
+        try:
+            items = [
+                {
+                    "namespace": item.namespace,
+                    "lu_id": item.lu_id,
+                    "condition": item.condition,
+                    "decision": item.decision,
+                    "lifecycle_state": item.lifecycle_state.value,
+                    "trust_tier": item.trust_tier.value if item.trust_tier else None,
+                    "metadata": item.metadata,
+                }
+                for item in request.items
+            ]
+            return await svc.batch_inject_knowledge_text(
+                items=items,
+                namespace=request.namespace,
+                skip_duplicates=request.skip_duplicates,
+            )
+        except Exception as e:
+            logger.error(f"Batch inject text failed: {e}")
             raise HTTPException(status_code=500, detail=str(e))
     
     @knowledge_router.get("/{namespace}/{lu_id}")

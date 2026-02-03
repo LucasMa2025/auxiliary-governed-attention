@@ -7,11 +7,21 @@ AGA API 服务层
 - 服务层负责所有业务逻辑
 - 路由层只负责 HTTP 协议转换
 - 复用现有的 KnowledgeWriter 和 PersistenceManager
+
+架构说明：
+    单机部署的 AGA API 服务同时承担：
+    - 知识管理（CRUD）
+    - KV 编码（将文本转换为向量）
+    - 推理执行
+    
+    治理系统只需传递文本形式的 condition/decision，
+    编码由本服务完成，确保编码器一致性。
 """
 import asyncio
 import time
 import logging
-from typing import Dict, List, Any, Optional, Set
+from typing import Dict, List, Any, Optional, Set, TYPE_CHECKING
+
 from datetime import datetime
 from dataclasses import dataclass, field
 
@@ -19,6 +29,9 @@ import torch
 
 from ..types import LifecycleState, Slot, KnowledgeSlotInfo
 from ..core import AuxiliaryGovernedAttention
+
+if TYPE_CHECKING:
+    from ..encoder import BaseEncoder
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +52,12 @@ class ServiceConfig:
     writer_num_workers: int = 2
     writer_max_queue_size: int = 1000
     enable_quality_assessment: bool = True
+    # 编码器配置
+    encoder_type: str = "hash"  # hash, openai, openai_compatible, sentence_transformers, etc.
+    encoder_model: Optional[str] = None
+    encoder_api_key: Optional[str] = None
+    encoder_base_url: Optional[str] = None
+    encoder_provider: Optional[str] = None  # deepseek, qwen, zhipu, etc.
 
 
 class AGAService:
@@ -66,6 +85,9 @@ class AGAService:
         # 写入器
         self._writer = None
         self._aga_manager = None
+        
+        # 编码器
+        self._encoder: Optional["BaseEncoder"] = None
         
         # 启动时间（用于健康检查）
         self._start_time = time.time()
@@ -105,6 +127,9 @@ class AGAService:
             # 2. 初始化写入器
             if self.config.writer_enabled:
                 self._init_writer()
+            
+            # 3. 初始化编码器
+            self._init_encoder()
             
             self._initialized = True
             logger.info("AGA Service initialized successfully")
@@ -171,6 +196,56 @@ class AGAService:
         )
         self._writer.start()
         logger.info("KnowledgeWriter started")
+    
+    def _init_encoder(self):
+        """
+        初始化编码器
+        
+        编码器用于将文本转换为 KV 向量。
+        这是单机部署 API 的核心职责之一，确保编码器一致性。
+        """
+        from ..encoder import EncoderFactory, EncoderConfig, EncoderType
+        
+        try:
+            encoder_type = EncoderType(self.config.encoder_type)
+        except ValueError:
+            logger.warning(f"Unknown encoder type '{self.config.encoder_type}', using hash")
+            encoder_type = EncoderType.HASH
+        
+        config = EncoderConfig(
+            encoder_type=encoder_type,
+            key_dim=self.config.bottleneck_dim,
+            value_dim=self.config.hidden_dim,
+            model=self.config.encoder_model,
+            base_url=self.config.encoder_base_url,
+            api_key=self.config.encoder_api_key,
+            provider=self.config.encoder_provider,
+        )
+        
+        self._encoder = EncoderFactory.create(config)
+        self._encoder.initialize()
+        
+        logger.info(
+            f"Encoder initialized: {self._encoder.encoder_type.value} "
+            f"(native_dim={self._encoder.native_dim}, "
+            f"key_dim={self._encoder.key_dim}, "
+            f"value_dim={self._encoder.value_dim})"
+        )
+    
+    @property
+    def encoder(self) -> "BaseEncoder":
+        """获取编码器"""
+        if self._encoder is None:
+            raise RuntimeError("Encoder not initialized. Call initialize() first.")
+        return self._encoder
+    
+    def get_encoder_signature(self) -> Dict[str, Any]:
+        """
+        获取编码器签名
+        
+        治理系统可以查询此签名以了解服务使用的编码器配置。
+        """
+        return self.encoder.get_signature().to_dict()
     
     def _get_or_create_aga(self, namespace: str) -> AuxiliaryGovernedAttention:
         """获取或创建 AGA 实例"""
@@ -305,6 +380,111 @@ class AGAService:
                 "lifecycle_state": lifecycle_state,
                 "timestamp": datetime.utcnow().isoformat(),
             }
+    
+    async def inject_knowledge_text(
+        self,
+        namespace: str,
+        lu_id: str,
+        condition: str,
+        decision: str,
+        lifecycle_state: str = "probationary",
+        trust_tier: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        sync: bool = True,
+    ) -> Dict[str, Any]:
+        """
+        注入知识（文本形式，服务负责编码）
+        
+        ✅ 推荐 API：治理系统应使用此方法。
+        
+        流程：
+        1. 使用编码器将 condition/decision 转换为 KV 向量
+        2. 调用 inject_knowledge 完成注入
+        
+        架构优势：
+        - 治理系统只需传递语义描述，不涉及向量编码
+        - 编码器一致性由服务保证
+        - 规则文本可审计
+        
+        Args:
+            namespace: 命名空间
+            lu_id: Learning Unit ID
+            condition: 触发条件（文本）
+            decision: 决策描述（文本）
+            lifecycle_state: 生命周期状态
+            trust_tier: 信任层级
+            metadata: 扩展元数据
+            sync: 是否同步写入
+        
+        Returns:
+            注入结果
+        """
+        # 使用编码器将文本转换为向量
+        key_vector, value_vector = self.encoder.encode_constraint(condition, decision)
+        
+        # 在 metadata 中记录编码器签名（用于审计和一致性验证）
+        enriched_metadata = metadata.copy() if metadata else {}
+        enriched_metadata["encoder_signature"] = self.get_encoder_signature()
+        enriched_metadata["encoded_by"] = "aga_api"
+        
+        # 调用原有的注入方法
+        return await self.inject_knowledge(
+            namespace=namespace,
+            lu_id=lu_id,
+            condition=condition,
+            decision=decision,
+            key_vector=key_vector,
+            value_vector=value_vector,
+            lifecycle_state=lifecycle_state,
+            trust_tier=trust_tier,
+            metadata=enriched_metadata,
+            sync=sync,
+        )
+    
+    async def batch_inject_knowledge_text(
+        self,
+        items: List[Dict[str, Any]],
+        namespace: str = "default",
+        skip_duplicates: bool = True,
+    ) -> Dict[str, Any]:
+        """
+        批量注入知识（文本形式，服务负责编码）
+        
+        ✅ 推荐 API：治理系统应使用此方法。
+        """
+        results = []
+        success_count = 0
+        failed_count = 0
+        
+        for item in items:
+            item_ns = item.get("namespace", namespace)
+            try:
+                result = await self.inject_knowledge_text(
+                    namespace=item_ns,
+                    lu_id=item["lu_id"],
+                    condition=item["condition"],
+                    decision=item["decision"],
+                    lifecycle_state=item.get("lifecycle_state", "probationary"),
+                    trust_tier=item.get("trust_tier"),
+                    metadata=item.get("metadata"),
+                )
+                results.append(result)
+                if result.get("success"):
+                    success_count += 1
+            except Exception as e:
+                failed_count += 1
+                results.append({
+                    "success": False,
+                    "lu_id": item.get("lu_id"),
+                    "error": str(e),
+                })
+        
+        return {
+            "total": len(items),
+            "success_count": success_count,
+            "failed_count": failed_count,
+            "results": results,
+        }
     
     async def batch_inject_knowledge(
         self,
@@ -671,14 +851,27 @@ class AGAService:
             writer_stats = self._writer.get_statistics()
             writer_status = f"healthy (queue: {writer_stats.get('queue_size', 0)})"
         
+        # 编码器状态
+        encoder_info = None
+        if self._encoder:
+            encoder_info = {
+                "type": self._encoder.encoder_type.value,
+                "model": self._encoder.model_name,
+                "native_dim": self._encoder.native_dim,
+                "key_dim": self._encoder.key_dim,
+                "value_dim": self._encoder.value_dim,
+                "is_available": self._encoder.is_available,
+            }
+        
         return {
             "status": "healthy",
-            "version": "3.1.0",
+            "version": "4.0.0",
             "initialized": self._initialized,
             "namespaces": list(self._aga_instances.keys()),
             "total_knowledge": total_knowledge,
             "persistence": persistence_status,
             "writer": writer_status,
+            "encoder": encoder_info,
             "uptime_seconds": time.time() - self._start_time,
             "timestamp": datetime.utcnow().isoformat(),
         }
@@ -689,7 +882,7 @@ class AGAService:
     
     def get_config(self) -> Dict[str, Any]:
         """获取服务配置"""
-        return {
+        config = {
             "hidden_dim": self.config.hidden_dim,
             "bottleneck_dim": self.config.bottleneck_dim,
             "num_slots": self.config.num_slots,
@@ -698,4 +891,13 @@ class AGAService:
             "persistence_type": self.config.persistence_type,
             "writer_enabled": self.config.writer_enabled,
             "enable_quality_assessment": self.config.enable_quality_assessment,
+            "encoder_type": self.config.encoder_type,
+            "encoder_model": self.config.encoder_model,
+            "encoder_provider": self.config.encoder_provider,
         }
+        
+        # 添加编码器签名（如果已初始化）
+        if self._encoder:
+            config["encoder_signature"] = self.get_encoder_signature()
+        
+        return config

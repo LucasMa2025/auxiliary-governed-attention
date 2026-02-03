@@ -11,7 +11,7 @@ AGA 配置管理模块
 """
 
 from .portal import PortalConfig, ServerConfig, PersistenceDBConfig, MessagingConfig
-from .runtime import RuntimeConfig, AGAModuleConfig, SyncClientConfig
+from .runtime import RuntimeConfig, AGAModuleConfig, SyncClientConfig, EncoderModuleConfig
 from .sync import SyncConfig, RedisConfig, KafkaConfig
 from .loader import load_config, save_config
 
@@ -25,6 +25,7 @@ __all__ = [
     "RuntimeConfig",
     "AGAModuleConfig",
     "SyncClientConfig",
+    "EncoderModuleConfig",
     # 同步配置
     "SyncConfig",
     "RedisConfig",

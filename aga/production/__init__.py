@@ -72,11 +72,22 @@ from .persistence import (
     PostgreSQLPersistence,
     HybridPersistence,
     PersistenceManager,
+    PrometheusMetrics,
 )
 from .operator import AGAOperator, ConcurrentAGAManager
-from .writer import KnowledgeWriter, WriteRequest, WriteResult
+from .writer import KnowledgeWriter, WriteRequest, WriteResult, QualityAssessor
+from .safety import (
+    SafetyLevel,
+    SafetyCategory,
+    SafetyResult,
+    BaseSafetyClassifier,
+    RuleBasedSafetyClassifier,
+    LLMSafetyClassifier,
+    CompositeSafetyClassifier,
+    create_safety_classifier,
+)
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 
 __all__ = [
     # Config
@@ -100,6 +111,7 @@ __all__ = [
     "PostgreSQLPersistence",
     "HybridPersistence",
     "PersistenceManager",
+    "PrometheusMetrics",
     # Operator
     "AGAOperator",
     "ConcurrentAGAManager",
@@ -107,5 +119,15 @@ __all__ = [
     "KnowledgeWriter",
     "WriteRequest",
     "WriteResult",
+    "QualityAssessor",
+    # Safety
+    "SafetyLevel",
+    "SafetyCategory",
+    "SafetyResult",
+    "BaseSafetyClassifier",
+    "RuleBasedSafetyClassifier",
+    "LLMSafetyClassifier",
+    "CompositeSafetyClassifier",
+    "create_safety_classifier",
 ]
 

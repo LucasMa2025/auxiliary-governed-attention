@@ -214,6 +214,38 @@ except ImportError:
     SyncPublisher = None
     SyncSubscriber = None
 
+# ==================== 编码器 ====================
+try:
+    from .encoder import (
+        BaseEncoder,
+        EncoderType,
+        EncoderConfig,
+        EncoderSignature,
+        EncoderFactory,
+        HashEncoder,
+        EmbeddingLayerEncoder,
+        OpenAIEncoder,
+        OpenAICompatibleEncoder,
+        SentenceTransformersEncoder,
+        OllamaEncoder,
+        VLLMEncoder,
+    )
+    _HAS_ENCODER = True
+except ImportError:
+    _HAS_ENCODER = False
+    BaseEncoder = None
+    EncoderType = None
+    EncoderConfig = None
+    EncoderSignature = None
+    EncoderFactory = None
+    HashEncoder = None
+    EmbeddingLayerEncoder = None
+    OpenAIEncoder = None
+    OpenAICompatibleEncoder = None
+    SentenceTransformersEncoder = None
+    OllamaEncoder = None
+    VLLMEncoder = None
+
 # ==================== 客户端 ====================
 try:
     from .client import (
@@ -323,6 +355,20 @@ __all__ = [
     # 客户端
     "PortalClient",
     "AsyncPortalClient",
+    
+    # 编码器
+    "BaseEncoder",
+    "EncoderType",
+    "EncoderConfig",
+    "EncoderSignature",
+    "EncoderFactory",
+    "HashEncoder",
+    "EmbeddingLayerEncoder",
+    "OpenAIEncoder",
+    "OpenAICompatibleEncoder",
+    "SentenceTransformersEncoder",
+    "OllamaEncoder",
+    "VLLMEncoder",
 ]
 
 

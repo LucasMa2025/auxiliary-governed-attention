@@ -24,6 +24,8 @@ from .base import (
     PersistenceError,
     ConnectionError,
     SerializationError,
+    TrustTier,
+    TRUST_TIER_PRIORITY,
 )
 from .sqlite_adapter import SQLiteAdapter
 from .memory_adapter import MemoryAdapter
@@ -96,6 +98,9 @@ __all__ = [
     "PersistenceError",
     "ConnectionError",
     "SerializationError",
+    # 信任层级
+    "TrustTier",
+    "TRUST_TIER_PRIORITY",
     # 适配器
     "SQLiteAdapter",
     "MemoryAdapter",

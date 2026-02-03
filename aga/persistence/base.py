@@ -33,6 +33,36 @@ class SerializationError(PersistenceError):
 
 # ==================== 数据类 ====================
 
+class TrustTier(str):
+    """
+    信任层级
+    
+    定义知识的信任等级，用于访问控制和过滤。
+    
+    层级说明：
+    - SYSTEM: 系统级，最高信任，核心规则
+    - VERIFIED: 已验证，经过人工审核确认
+    - STANDARD: 标准级，默认层级
+    - EXPERIMENTAL: 实验性，尚在测试
+    - UNTRUSTED: 不可信，需谨慎使用
+    """
+    SYSTEM = "system"
+    VERIFIED = "verified"
+    STANDARD = "standard"
+    EXPERIMENTAL = "experimental"
+    UNTRUSTED = "untrusted"
+
+
+# 信任层级优先级（数值越大，信任度越高）
+TRUST_TIER_PRIORITY = {
+    TrustTier.SYSTEM: 100,
+    TrustTier.VERIFIED: 80,
+    TrustTier.STANDARD: 50,
+    TrustTier.EXPERIMENTAL: 30,
+    TrustTier.UNTRUSTED: 10,
+}
+
+
 @dataclass
 class KnowledgeRecord:
     """
@@ -54,6 +84,7 @@ class KnowledgeRecord:
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
     metadata: Optional[Dict[str, Any]] = None
+    trust_tier: str = TrustTier.STANDARD  # 新增：信任层级
     
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典"""
@@ -72,6 +103,7 @@ class KnowledgeRecord:
             'created_at': self.created_at,
             'updated_at': self.updated_at,
             'metadata': self.metadata,
+            'trust_tier': self.trust_tier,
         }
     
     @classmethod
@@ -92,6 +124,7 @@ class KnowledgeRecord:
             created_at=data.get('created_at'),
             updated_at=data.get('updated_at'),
             metadata=data.get('metadata'),
+            trust_tier=data.get('trust_tier', TrustTier.STANDARD),
         )
     
     def to_json(self) -> str:
@@ -416,6 +449,7 @@ class PersistenceAdapter(ABC):
         namespace: str,
         lifecycle_states: Optional[List[str]] = None,
         trust_tiers: Optional[List[str]] = None,
+        min_trust_priority: Optional[int] = None,
         limit: int = 100,
         offset: int = 0,
     ) -> List[Dict[str, Any]]:
@@ -425,7 +459,8 @@ class PersistenceAdapter(ABC):
         Args:
             namespace: 命名空间
             lifecycle_states: 状态过滤
-            trust_tiers: 层级过滤
+            trust_tiers: 层级过滤（精确匹配）
+            min_trust_priority: 最低信任优先级（用于范围过滤）
             limit: 限制数量
             offset: 偏移量
         
@@ -435,16 +470,95 @@ class PersistenceAdapter(ABC):
         # 默认实现：加载所有然后过滤
         records = await self.load_all_slots(namespace)
         
-        # 过滤
+        # 生命周期状态过滤
         if lifecycle_states:
             records = [r for r in records if r.lifecycle_state in lifecycle_states]
         
-        # TODO: trust_tier 过滤需要在 metadata 中检查
+        # 信任层级过滤
+        if trust_tiers:
+            records = [r for r in records if r.trust_tier in trust_tiers]
+        
+        # 最低信任优先级过滤
+        if min_trust_priority is not None:
+            records = [
+                r for r in records 
+                if TRUST_TIER_PRIORITY.get(r.trust_tier, 0) >= min_trust_priority
+            ]
         
         # 分页
         records = records[offset:offset + limit]
         
         return [r.to_dict() for r in records]
+    
+    async def query_knowledge_by_trust(
+        self,
+        namespace: str,
+        min_tier: str = TrustTier.STANDARD,
+        include_experimental: bool = False,
+    ) -> List[Dict[str, Any]]:
+        """
+        按信任层级查询知识（便捷方法）
+        
+        Args:
+            namespace: 命名空间
+            min_tier: 最低信任层级
+            include_experimental: 是否包含实验性知识
+        
+        Returns:
+            符合条件的知识列表
+        """
+        min_priority = TRUST_TIER_PRIORITY.get(min_tier, 0)
+        
+        records = await self.load_active_slots(namespace)
+        
+        # 过滤
+        filtered = []
+        for r in records:
+            tier_priority = TRUST_TIER_PRIORITY.get(r.trust_tier, 0)
+            
+            # 检查是否满足最低优先级
+            if tier_priority >= min_priority:
+                filtered.append(r)
+            # 特殊处理实验性
+            elif include_experimental and r.trust_tier == TrustTier.EXPERIMENTAL:
+                filtered.append(r)
+        
+        return [r.to_dict() for r in filtered]
+    
+    async def update_trust_tier(
+        self,
+        namespace: str,
+        lu_id: str,
+        new_tier: str,
+    ) -> bool:
+        """
+        更新知识的信任层级
+        
+        Args:
+            namespace: 命名空间
+            lu_id: 知识 ID
+            new_tier: 新的信任层级
+        
+        Returns:
+            是否成功
+        """
+        # 验证信任层级
+        if new_tier not in TRUST_TIER_PRIORITY:
+            raise ValueError(f"Invalid trust tier: {new_tier}")
+        
+        # 加载记录
+        record = await self.load_slot(namespace, lu_id)
+        if not record:
+            return False
+        
+        # 更新信任层级
+        record.trust_tier = new_tier
+        record.updated_at = datetime.now().isoformat()
+        if record.version:
+            record.version += 1
+        
+        # 保存
+        return await self.save_slot(namespace, record)
     
     # ==================== 审计日志 ====================
     

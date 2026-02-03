@@ -13,6 +13,43 @@ import uuid
 
 
 @dataclass
+class EncoderModuleConfig:
+    """
+    编码器配置
+    
+    ⚠️ 编码器一致性要求：
+    - 注入时的编码器与推理时的编码器必须一致
+    - 不同编码器产生的向量空间不同，混用会导致匹配失败
+    
+    支持的编码器类型：
+    - hash: 哈希编码（测试用）
+    - embedding_layer: 从 LLM 嵌入层提取
+    - openai: OpenAI text-embedding
+    - openai_compatible: OpenAI 兼容 API（DeepSeek/Qwen/智谱 等）
+    - sentence_transformers: HuggingFace 本地模型
+    - ollama: Ollama 本地模型
+    - vllm: vLLM 本地部署
+    """
+    # 编码器类型
+    encoder_type: str = "hash"
+    
+    # 显式维度配置（如果设置，会覆盖自动检测）
+    # 设为 None 表示使用编码器默认值
+    native_dim: Optional[int] = None
+    
+    # 模型配置
+    model: Optional[str] = None
+    base_url: Optional[str] = None
+    api_key: Optional[str] = None
+    
+    # 服务商预设（用于 OpenAI 兼容 API）
+    provider: Optional[str] = None  # deepseek, qwen, zhipu, moonshot 等
+    
+    # 设备（用于本地模型）
+    device: str = "cpu"
+
+
+@dataclass
 class AGAModuleConfig:
     """AGA 模块配置"""
     hidden_dim: int = 4096
@@ -33,6 +70,9 @@ class AGAModuleConfig:
     # 路由
     top_k_slots: int = 3
     temperature: float = 1.0
+    
+    # 编码器配置
+    encoder: EncoderModuleConfig = field(default_factory=EncoderModuleConfig)
 
 
 @dataclass
@@ -198,11 +238,19 @@ class RuntimeConfig:
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "RuntimeConfig":
         """从字典创建"""
+        # 处理 AGA 模块配置
+        aga_data = data.get("aga", {})
+        encoder_data = aga_data.pop("encoder", {}) if "encoder" in aga_data else {}
+        aga_config = AGAModuleConfig(
+            **aga_data,
+            encoder=EncoderModuleConfig(**encoder_data) if encoder_data else EncoderModuleConfig(),
+        )
+        
         return cls(
             instance_id=data.get("instance_id", f"runtime-{uuid.uuid4().hex[:8]}"),
             namespace=data.get("namespace", "default"),
             namespaces=data.get("namespaces", ["default"]),
-            aga=AGAModuleConfig(**data.get("aga", {})),
+            aga=aga_config,
             sync=SyncClientConfig(**data.get("sync", {})),
             cache=LocalCacheConfig(**data.get("cache", {})),
             device=data.get("device", "cuda"),
@@ -210,3 +258,28 @@ class RuntimeConfig:
             version=data.get("version", "3.2.0"),
             environment=data.get("environment", "development"),
         )
+    
+    def create_encoder(self):
+        """
+        根据配置创建编码器
+        
+        Returns:
+            BaseEncoder 实例
+        """
+        from ..encoder import EncoderFactory, EncoderConfig, EncoderType
+        
+        enc_cfg = self.aga.encoder
+        
+        config = EncoderConfig(
+            encoder_type=EncoderType(enc_cfg.encoder_type),
+            key_dim=self.aga.bottleneck_dim,
+            value_dim=self.aga.hidden_dim,
+            native_dim=enc_cfg.native_dim,
+            model=enc_cfg.model,
+            base_url=enc_cfg.base_url,
+            api_key=enc_cfg.api_key,
+            provider=enc_cfg.provider,
+            device=enc_cfg.device,
+        )
+        
+        return EncoderFactory.create(config)

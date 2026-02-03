@@ -49,7 +49,12 @@ class TrustTierEnum(str, Enum):
 
 if HAS_PYDANTIC:
     class InjectKnowledgeRequest(BaseModel):
-        """知识注入请求"""
+        """
+        知识注入请求（包含向量）
+        
+        ⚠️ 内部使用：此模型要求调用方提供预编码的向量。
+        治理系统应使用 InjectKnowledgeTextRequest。
+        """
         model_config = ConfigDict(extra="forbid")
         
         lu_id: str = Field(..., description="Learning Unit ID (唯一标识)")
@@ -71,11 +76,62 @@ if HAS_PYDANTIC:
             description="扩展元数据"
         )
     
+    class InjectKnowledgeTextRequest(BaseModel):
+        """
+        文本知识注入请求（推荐）
+        
+        治理系统应使用此模型，由 AGA 服务负责编码。
+        
+        架构原则：
+        - 治理系统 = 规则与授权的"主权层"，只传递语义描述
+        - AGA 服务 = 规则被执行的"计算层"，负责 KV 编码
+        
+        这样保证：
+        1. 编码器一致性（注入与推理使用同一编码器）
+        2. 治理系统与模型解耦
+        3. 规则文本可审计
+        """
+        model_config = ConfigDict(extra="forbid")
+        
+        lu_id: str = Field(..., description="Learning Unit ID (唯一标识)")
+        namespace: str = Field(default="default", description="命名空间")
+        condition: str = Field(..., description="触发条件描述（文本）")
+        decision: str = Field(..., description="决策/动作描述（文本）")
+        lifecycle_state: LifecycleStateEnum = Field(
+            default=LifecycleStateEnum.PROBATIONARY,
+            description="初始生命周期状态"
+        )
+        trust_tier: Optional[TrustTierEnum] = Field(
+            default=None,
+            description="信任层级（用于治理）"
+        )
+        metadata: Optional[Dict[str, Any]] = Field(
+            default=None,
+            description="扩展元数据"
+        )
+    
     class BatchInjectRequest(BaseModel):
-        """批量注入请求"""
+        """
+        批量注入请求（包含向量）
+        
+        ⚠️ 内部使用：此模型要求调用方提供预编码的向量。
+        治理系统应使用 BatchInjectTextRequest。
+        """
         model_config = ConfigDict(extra="forbid")
         
         items: List[InjectKnowledgeRequest] = Field(..., description="知识列表")
+        namespace: str = Field(default="default", description="默认命名空间")
+        skip_duplicates: bool = Field(default=True, description="跳过重复 LU ID")
+    
+    class BatchInjectTextRequest(BaseModel):
+        """
+        批量文本注入请求（推荐）
+        
+        治理系统应使用此模型，由 AGA 服务负责编码。
+        """
+        model_config = ConfigDict(extra="forbid")
+        
+        items: List[InjectKnowledgeTextRequest] = Field(..., description="知识列表")
         namespace: str = Field(default="default", description="默认命名空间")
         skip_duplicates: bool = Field(default=True, description="跳过重复 LU ID")
     
