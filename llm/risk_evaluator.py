@@ -6,8 +6,7 @@ LLM 风险评估器
 from typing import Dict, Any, Optional
 import json
 
-from core.types import LearningUnit, RiskAssessment
-from core.enums import RiskLevel
+from aga.types import LearningUnit, RiskAssessment, RiskLevel
 from .client import DeepSeekClient, MockDeepSeekClient
 from .prompts import PromptTemplates
 
