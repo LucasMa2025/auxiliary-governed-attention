@@ -26,7 +26,7 @@ def mock_portal_service():
     """创建模拟 Portal 服务"""
     service = Mock(spec=PortalService)
     
-    # 配置异步方法
+    # 配置异步方法 - 返回字典而不是 AsyncMock
     service.health_check = AsyncMock(return_value={
         "status": "healthy",
         "uptime_seconds": 100.0,
@@ -60,9 +60,11 @@ def mock_portal_service():
         "lifecycle_state": "probationary",
     })
     
-    service.list_knowledge = AsyncMock(return_value={
+    service.query_knowledge = AsyncMock(return_value={
         "items": [],
-        "total": 0,
+        "count": 0,
+        "limit": 100,
+        "offset": 0,
     })
     
     service.delete_knowledge = AsyncMock(return_value={
@@ -71,10 +73,15 @@ def mock_portal_service():
     
     service.update_lifecycle = AsyncMock(return_value={
         "success": True,
+        "lu_id": "LU_001",
+        "old_state": "probationary",
+        "new_state": "confirmed",
     })
     
-    service.quarantine_knowledge = AsyncMock(return_value={
+    service.quarantine = AsyncMock(return_value={
         "success": True,
+        "lu_id": "LU_001",
+        "new_state": "quarantined",
     })
     
     service.get_encoder_signature = Mock(return_value={
@@ -175,7 +182,8 @@ class TestPortalKnowledgeRoutes:
     
     def test_batch_inject_text(self, client, mock_portal_service):
         """测试批量文本注入"""
-        response = client.post("/knowledge/batch-inject-text", json={
+        # 注意：路由是 /batch-text 而不是 /batch-inject-text
+        response = client.post("/knowledge/batch-text", json={
             "items": [
                 {
                     "lu_id": "LU_001",
@@ -200,7 +208,8 @@ class TestPortalKnowledgeRoutes:
         
         assert response.status_code == 200
         data = response.json()
-        assert data["lu_id"] == "LU_001"
+        assert data["success"] is True
+        assert data["data"]["lu_id"] == "LU_001"
     
     def test_list_knowledge(self, client, mock_portal_service):
         """测试列出知识"""
@@ -208,7 +217,8 @@ class TestPortalKnowledgeRoutes:
         
         assert response.status_code == 200
         data = response.json()
-        assert "items" in data
+        assert data["success"] is True
+        assert "items" in data["data"]
     
     def test_delete_knowledge(self, client, mock_portal_service):
         """测试删除知识"""
@@ -224,7 +234,8 @@ class TestPortalLifecycleRoutes:
     
     def test_update_lifecycle(self, client, mock_portal_service):
         """测试更新生命周期"""
-        response = client.post("/lifecycle/update", json={
+        # 注意：使用 PUT 方法而不是 POST
+        response = client.put("/lifecycle/update", json={
             "lu_id": "LU_001",
             "new_state": "confirmed",
         })

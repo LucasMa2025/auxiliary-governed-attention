@@ -87,6 +87,19 @@ def mock_service():
         "avg_value_norm": 1.0,
     })
     
+    service.get_namespace_statistics = AsyncMock(return_value={
+        "namespace": "default",
+        "total_slots": 100,
+        "active_slots": 10,
+        "free_slots": 90,
+        "state_distribution": {"probationary": 5, "confirmed": 5},
+        "trust_tier_distribution": {"s0_acceleration": 3, "s1_experience": 7},
+        "total_hits": 100,
+        "avg_reliability": 0.9,
+        "avg_key_norm": 1.0,
+        "avg_value_norm": 1.0,
+    })
+    
     return service
 
 

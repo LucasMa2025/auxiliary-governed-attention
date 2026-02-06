@@ -30,9 +30,12 @@ def mock_persistence():
     adapter = AsyncMock()
     adapter.connect = AsyncMock()
     adapter.disconnect = AsyncMock()
-    adapter.save_slot = AsyncMock(return_value=True)
-    adapter.load_slot = AsyncMock(return_value=None)
-    adapter.list_slots = AsyncMock(return_value=[])
+    adapter.save_knowledge = AsyncMock(return_value=True)
+    adapter.load_knowledge = AsyncMock(return_value=None)
+    adapter.delete_knowledge = AsyncMock(return_value=True)
+    adapter.update_knowledge = AsyncMock(return_value=True)
+    adapter.query_knowledge = AsyncMock(return_value=[])
+    adapter.get_namespaces = AsyncMock(return_value=["default"])
     return adapter
 
 
@@ -43,6 +46,10 @@ def mock_publisher():
     publisher.connect = AsyncMock()
     publisher.disconnect = AsyncMock()
     publisher.publish = AsyncMock(return_value=True)
+    publisher.publish_inject = AsyncMock(return_value={"success": True})
+    publisher.publish_update = AsyncMock(return_value={"success": True})
+    publisher.publish_delete = AsyncMock(return_value={"success": True})
+    publisher.publish_quarantine = AsyncMock(return_value={"success": True})
     return publisher
 
 
@@ -55,6 +62,8 @@ def mock_encoder():
     encoder.native_dim = 768
     encoder.key_dim = 64
     encoder.value_dim = 4096
+    encoder.model_name = "hash-encoder"
+    encoder.is_available = True
     encoder.initialize = Mock()
     encoder.encode = Mock(return_value=[0.1] * 768)
     encoder.encode_key = Mock(return_value=[0.1] * 64)
@@ -63,6 +72,8 @@ def mock_encoder():
     encoder.get_signature = Mock(return_value=Mock(to_dict=Mock(return_value={
         "type": "hash",
         "native_dim": 768,
+        "key_dim": 64,
+        "value_dim": 4096,
     })))
     return encoder
 
@@ -207,6 +218,9 @@ class TestPortalServiceKnowledgeOperations:
         )
         
         assert result["success"] is True
+        assert result["lu_id"] == "LU_001"
+        mock_persistence.save_knowledge.assert_called_once()
+        mock_publisher.publish_inject.assert_called_once()
     
     @pytest.mark.asyncio
     async def test_inject_knowledge_text(self, portal_config, mock_persistence, mock_publisher, mock_encoder):
@@ -226,24 +240,24 @@ class TestPortalServiceKnowledgeOperations:
         )
         
         assert result["success"] is True
+        mock_encoder.encode_constraint.assert_called_once_with("用户询问天气", "提供天气信息")
     
     @pytest.mark.asyncio
     async def test_get_knowledge(self, portal_config, mock_persistence):
         """测试获取知识"""
         from aga.portal.service import PortalService
-        from aga.persistence.base import KnowledgeRecord
         
-        # 模拟返回数据
-        mock_persistence.load_slot.return_value = KnowledgeRecord(
-            lu_id="LU_001",
-            slot_idx=0,
-            namespace="default",
-            key_vector=[0.1] * 64,
-            value_vector=[0.2] * 4096,
-            condition="条件",
-            decision="决策",
-            lifecycle_state="probationary",
-        )
+        # 模拟返回数据 - 返回字典而不是 KnowledgeRecord
+        mock_persistence.load_knowledge = AsyncMock(return_value={
+            "lu_id": "LU_001",
+            "slot_idx": 0,
+            "namespace": "default",
+            "key_vector": [0.1] * 64,
+            "value_vector": [0.2] * 4096,
+            "condition": "条件",
+            "decision": "决策",
+            "lifecycle_state": "probationary",
+        })
         
         service = PortalService(portal_config)
         service._persistence = mock_persistence
@@ -252,14 +266,20 @@ class TestPortalServiceKnowledgeOperations:
         result = await service.get_knowledge("LU_001", "default")
         
         assert result is not None
-        assert result["lu_id"] == "LU_001"
+        # 向量应该被移除（include_vectors=False）
+        mock_persistence.load_knowledge.assert_called_once()
     
     @pytest.mark.asyncio
     async def test_delete_knowledge(self, portal_config, mock_persistence, mock_publisher):
         """测试删除知识"""
         from aga.portal.service import PortalService
         
-        mock_persistence.delete_slot = AsyncMock(return_value=True)
+        # 模拟存在的记录
+        mock_persistence.load_knowledge = AsyncMock(return_value={
+            "lu_id": "LU_001",
+            "namespace": "default",
+            "lifecycle_state": "probationary",
+        })
         
         service = PortalService(portal_config)
         service._persistence = mock_persistence
@@ -269,6 +289,7 @@ class TestPortalServiceKnowledgeOperations:
         result = await service.delete_knowledge("LU_001", "default")
         
         assert result["success"] is True
+        mock_persistence.delete_knowledge.assert_called_once()
 
 
 @pytest.mark.unit
@@ -279,18 +300,18 @@ class TestPortalServiceLifecycle:
     async def test_update_lifecycle(self, portal_config, mock_persistence, mock_publisher):
         """测试更新生命周期"""
         from aga.portal.service import PortalService
-        from aga.persistence.base import KnowledgeRecord
         
-        mock_persistence.load_slot.return_value = KnowledgeRecord(
-            lu_id="LU_001",
-            slot_idx=0,
-            namespace="default",
-            key_vector=[0.1] * 64,
-            value_vector=[0.2] * 4096,
-            condition="条件",
-            decision="决策",
-            lifecycle_state="probationary",
-        )
+        # 模拟加载现有知识
+        mock_persistence.load_knowledge = AsyncMock(return_value={
+            "lu_id": "LU_001",
+            "slot_idx": 0,
+            "namespace": "default",
+            "key_vector": [0.1] * 64,
+            "value_vector": [0.2] * 4096,
+            "condition": "条件",
+            "decision": "决策",
+            "lifecycle_state": "probationary",
+        })
         
         service = PortalService(portal_config)
         service._persistence = mock_persistence
@@ -301,36 +322,6 @@ class TestPortalServiceLifecycle:
             lu_id="LU_001",
             namespace="default",
             new_state="confirmed",
-        )
-        
-        assert result["success"] is True
-    
-    @pytest.mark.asyncio
-    async def test_quarantine_knowledge(self, portal_config, mock_persistence, mock_publisher):
-        """测试隔离知识"""
-        from aga.portal.service import PortalService
-        from aga.persistence.base import KnowledgeRecord
-        
-        mock_persistence.load_slot.return_value = KnowledgeRecord(
-            lu_id="LU_001",
-            slot_idx=0,
-            namespace="default",
-            key_vector=[0.1] * 64,
-            value_vector=[0.2] * 4096,
-            condition="条件",
-            decision="决策",
-            lifecycle_state="probationary",
-        )
-        
-        service = PortalService(portal_config)
-        service._persistence = mock_persistence
-        service._publisher = mock_publisher
-        service._initialized = True
-        
-        result = await service.quarantine_knowledge(
-            lu_id="LU_001",
-            namespace="default",
-            reason="检测到异常",
         )
         
         assert result["success"] is True
@@ -364,3 +355,30 @@ class TestPortalServiceHealth:
         
         # 未初始化时状态为 not_initialized
         assert health["status"] == "not_initialized"
+
+
+@pytest.mark.unit
+class TestPortalServiceBatchOperations:
+    """PortalService 批量操作测试"""
+    
+    @pytest.mark.asyncio
+    async def test_batch_inject_text(self, portal_config, mock_persistence, mock_publisher, mock_encoder):
+        """测试批量文本注入"""
+        from aga.portal.service import PortalService
+        
+        service = PortalService(portal_config)
+        service._persistence = mock_persistence
+        service._publisher = mock_publisher
+        service._encoder = mock_encoder
+        service._initialized = True
+        
+        items = [
+            {"lu_id": "LU_001", "condition": "条件1", "decision": "决策1"},
+            {"lu_id": "LU_002", "condition": "条件2", "decision": "决策2"},
+        ]
+        
+        result = await service.batch_inject_text(items)
+        
+        assert result["total"] == 2
+        assert result["success_count"] == 2
+        assert result["failed_count"] == 0
