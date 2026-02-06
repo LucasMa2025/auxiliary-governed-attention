@@ -31,6 +31,14 @@ from .sqlite_adapter import SQLiteAdapter
 from .memory_adapter import MemoryAdapter
 from .composite_adapter import CompositeAdapter
 from .manager import PersistenceManager
+from .pool import ConnectionPool, PoolConfig, PoolStats, PooledConnection
+from .compression import (
+    VectorCompressor,
+    CompressionConfig,
+    DecompressionCache,
+    Precision,
+    Compression,
+)
 
 # 可选适配器（需要额外依赖）
 try:
@@ -107,6 +115,17 @@ __all__ = [
     "CompositeAdapter",
     # 管理器
     "PersistenceManager",
+    # 连接池
+    "ConnectionPool",
+    "PoolConfig",
+    "PoolStats",
+    "PooledConnection",
+    # 压缩
+    "VectorCompressor",
+    "CompressionConfig",
+    "DecompressionCache",
+    "Precision",
+    "Compression",
     # 工厂
     "create_adapter",
     # 兼容旧版
