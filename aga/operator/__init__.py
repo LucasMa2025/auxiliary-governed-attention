@@ -9,8 +9,10 @@ AGA 算子层
 - 性能优化（混合精度、CUDA Graph）
 - 粒度掩码
 - 故障恢复
+- 多头注意力并行优化（v3.4.1 新增）
+- FlashAttention 深度集成（v3.4.1 新增）
 
-版本: v3.1
+版本: v3.4.1
 """
 from .aga_operator import AGAOperator
 from .manager import AGAManager
@@ -31,6 +33,21 @@ from .optimizations import (
     # 健康监控
     HealthConfig,
     HealthMonitor,
+)
+from .parallel_attention import (
+    # 注意力后端
+    AttentionBackend,
+    ParallelAttentionConfig,
+    MultiHeadParallelAttention,
+    # AGA 专用 FlashAttention
+    AGAFlashAttention,
+    # 分块注意力
+    ChunkedAttention,
+    # 工具函数
+    get_available_backends,
+    select_best_backend,
+    HAS_FLASH_ATTN,
+    HAS_XFORMERS,
 )
 
 __all__ = [
@@ -53,6 +70,14 @@ __all__ = [
     # 健康监控
     "HealthConfig",
     "HealthMonitor",
+    # 并行注意力（v3.4.1）
+    "AttentionBackend",
+    "ParallelAttentionConfig",
+    "MultiHeadParallelAttention",
+    "AGAFlashAttention",
+    "ChunkedAttention",
+    "get_available_backends",
+    "select_best_backend",
+    "HAS_FLASH_ATTN",
+    "HAS_XFORMERS",
 ]
-
-
