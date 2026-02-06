@@ -210,29 +210,6 @@ aga/portal/registry.py  70%
 
 ---
 
-## 🚀 改进建议
-
-### 短期 (1-2 周)
-
-1. 修复 8 个失败的测试用例
-2. 增加 API Client 测试覆盖
-3. 增加 Portal 路由测试覆盖
-
-### 中期 (1 个月)
-
-1. 添加 Redis/PostgreSQL 集成测试（使用 Docker）
-2. 添加分布式功能测试
-3. 提高整体覆盖率到 60%
-
-### 长期 (3 个月)
-
-1. 添加性能测试基准
-2. 添加压力测试
-3. 添加端到端测试
-4. 提高整体覆盖率到 80%
-
----
-
 ## 📝 测试命令参考
 
 ```bash
@@ -264,3 +241,4 @@ pytest tests/ --ignore=tests/component/persistence/test_redis_adapter.py
 ---
 
 *报告由 AGA 测试框架自动生成*
+
