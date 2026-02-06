@@ -1,6 +1,6 @@
 -- ============================================================
 -- AGA (Auxiliary Governed Attention) SQLite Schema
--- Version: 3.1
+-- Version: 3.4.1
 -- 
 -- 开发/测试环境数据库架构
 -- 
@@ -157,6 +157,88 @@ CREATE INDEX IF NOT EXISTS idx_votes_expires ON governance_votes(expires_at);
 -- propagation_queue 索引
 CREATE INDEX IF NOT EXISTS idx_propagation_status ON propagation_queue(status, scheduled_at);
 CREATE INDEX IF NOT EXISTS idx_propagation_namespace ON propagation_queue(namespace, lu_id);
+
+-- ============================================================
+-- v3.4.1 新增表
+-- ============================================================
+
+-- 向量时钟表（用于因果一致性）
+CREATE TABLE IF NOT EXISTS vector_clocks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    namespace TEXT NOT NULL,
+    lu_id TEXT NOT NULL,
+    clocks TEXT NOT NULL DEFAULT '{}',
+    last_updated TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(namespace, lu_id)
+);
+
+-- 分区事件表
+CREATE TABLE IF NOT EXISTS partition_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_type TEXT NOT NULL,  -- detected, suspected, healed
+    affected_instances TEXT DEFAULT '[]',
+    healthy_ratio REAL,
+    details TEXT DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- 冲突记录表
+CREATE TABLE IF NOT EXISTS conflict_records (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    namespace TEXT NOT NULL,
+    lu_id TEXT NOT NULL,
+    conflict_type TEXT NOT NULL,  -- concurrent_write, version_mismatch
+    versions TEXT NOT NULL,  -- 冲突的版本列表
+    resolution TEXT,  -- lww, fww, merge, manual
+    resolved_value TEXT,
+    resolved_by TEXT,
+    status TEXT DEFAULT 'pending',  -- pending, resolved, escalated
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    resolved_at TEXT
+);
+
+-- 实例心跳表
+CREATE TABLE IF NOT EXISTS instance_heartbeats (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    instance_id TEXT NOT NULL UNIQUE,
+    namespace TEXT NOT NULL,
+    host TEXT,
+    port INTEGER,
+    status TEXT DEFAULT 'unknown',
+    capabilities TEXT DEFAULT '[]',
+    metadata TEXT DEFAULT '{}',
+    vector_clock TEXT DEFAULT '{}',
+    last_heartbeat TEXT NOT NULL DEFAULT (datetime('now')),
+    registered_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- 告警记录表
+CREATE TABLE IF NOT EXISTS alert_records (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    alert_name TEXT NOT NULL,
+    severity TEXT NOT NULL,  -- info, warning, critical, page
+    state TEXT NOT NULL,  -- pending, firing, resolved
+    summary TEXT,
+    description TEXT,
+    instance_id TEXT,
+    labels TEXT DEFAULT '{}',
+    annotations TEXT DEFAULT '{}',
+    started_at TEXT NOT NULL DEFAULT (datetime('now')),
+    resolved_at TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- v3.4.1 新增索引
+CREATE INDEX IF NOT EXISTS idx_vector_clocks_namespace ON vector_clocks(namespace);
+CREATE INDEX IF NOT EXISTS idx_partition_events_type ON partition_events(event_type);
+CREATE INDEX IF NOT EXISTS idx_partition_events_created ON partition_events(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_conflict_namespace ON conflict_records(namespace, lu_id);
+CREATE INDEX IF NOT EXISTS idx_conflict_status ON conflict_records(status);
+CREATE INDEX IF NOT EXISTS idx_heartbeat_namespace ON instance_heartbeats(namespace);
+CREATE INDEX IF NOT EXISTS idx_heartbeat_status ON instance_heartbeats(status);
+CREATE INDEX IF NOT EXISTS idx_alert_name ON alert_records(alert_name);
+CREATE INDEX IF NOT EXISTS idx_alert_severity ON alert_records(severity);
+CREATE INDEX IF NOT EXISTS idx_alert_state ON alert_records(state);
 
 -- ============================================================
 -- 触发器
@@ -373,8 +455,65 @@ LIMIT 20;
 -- 完成
 -- ============================================================
 
+-- ============================================================
+-- v3.4.1 新增视图
+-- ============================================================
+
+-- 实例健康状态视图
+CREATE VIEW IF NOT EXISTS instance_health AS
+SELECT 
+    instance_id,
+    namespace,
+    host,
+    port,
+    status,
+    last_heartbeat,
+    (julianday('now') - julianday(last_heartbeat)) * 86400 as seconds_since_heartbeat,
+    CASE 
+        WHEN (julianday('now') - julianday(last_heartbeat)) * 86400 < 15 THEN 'healthy'
+        WHEN (julianday('now') - julianday(last_heartbeat)) * 86400 < 30 THEN 'suspected'
+        ELSE 'partitioned'
+    END as computed_status
+FROM instance_heartbeats;
+
+-- 待解决冲突视图
+CREATE VIEW IF NOT EXISTS pending_conflicts AS
+SELECT 
+    id,
+    namespace,
+    lu_id,
+    conflict_type,
+    versions,
+    created_at,
+    (julianday('now') - julianday(created_at)) * 86400 as age_seconds
+FROM conflict_records
+WHERE status = 'pending'
+ORDER BY created_at;
+
+-- 活跃告警视图
+CREATE VIEW IF NOT EXISTS active_alerts AS
+SELECT 
+    id,
+    alert_name,
+    severity,
+    summary,
+    description,
+    instance_id,
+    started_at,
+    (julianday('now') - julianday(started_at)) * 86400 as duration_seconds
+FROM alert_records
+WHERE state = 'firing'
+ORDER BY 
+    CASE severity 
+        WHEN 'page' THEN 1 
+        WHEN 'critical' THEN 2 
+        WHEN 'warning' THEN 3 
+        ELSE 4 
+    END,
+    started_at DESC;
+
 -- 检查表是否创建成功
-SELECT 'AGA SQLite Schema v3.1 installed successfully' as message;
+SELECT 'AGA SQLite Schema v3.4.1 installed successfully' as message;
 SELECT 'Tables: ' || group_concat(name, ', ') as tables 
 FROM sqlite_master 
 WHERE type = 'table' AND name NOT LIKE 'sqlite_%';
