@@ -53,6 +53,13 @@ from .adapters import (
     OllamaEncoder,
     VLLMEncoder,
 )
+from .cache import (
+    CachedEncoder,
+    PersistentCachedEncoder,
+    CacheConfig,
+    CacheStats,
+    LRUCache,
+)
 
 __all__ = [
     # 基础类
@@ -70,4 +77,10 @@ __all__ = [
     "SentenceTransformersEncoder",
     "OllamaEncoder",
     "VLLMEncoder",
+    # 缓存
+    "CachedEncoder",
+    "PersistentCachedEncoder",
+    "CacheConfig",
+    "CacheStats",
+    "LRUCache",
 ]
