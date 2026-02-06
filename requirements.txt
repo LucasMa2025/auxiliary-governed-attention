@@ -1,6 +1,6 @@
 # AGA - Auxiliary Governed Attention
 # ===================================
-# 产品级原型系统依赖 v3.4
+# 产品级原型系统依赖 v3.4.1
 
 # ==================== 核心依赖 ====================
 torch>=2.0.0
@@ -42,10 +42,14 @@ lz4>=4.3.0           # LZ4 压缩算法
 # aiokafka>=0.10.0
 
 # ==================== 监控（生产环境） ====================
-# prometheus-client>=0.19.0
-# opentelemetry-api>=1.20.0
-# opentelemetry-sdk>=1.20.0
-# opentelemetry-exporter-otlp>=1.20.0
+prometheus-client>=0.19.0     # Prometheus 指标导出
+# opentelemetry-api>=1.20.0   # OpenTelemetry API
+# opentelemetry-sdk>=1.20.0   # OpenTelemetry SDK
+# opentelemetry-exporter-otlp>=1.20.0  # OTLP 导出器
+
+# ==================== 高性能注意力（可选） ====================
+# flash-attn>=2.0.0           # FlashAttention 2.x (需要 CUDA)
+# xformers>=0.0.20            # xFormers memory_efficient_attention
 
 # ==================== 大模型支持 ====================
 # accelerate>=0.24.0
