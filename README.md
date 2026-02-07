@@ -3,7 +3,7 @@
 <div align="center">
 
 ![AGA Logo](https://img.shields.io/badge/AGA-Auxiliary%20Governed%20Attention-blue?style=for-the-badge)
-![Version](https://img.shields.io/badge/Version-3.4.1-green?style=flat-square)
+![Version](https://img.shields.io/badge/Version-3.4.0-green?style=flat-square)
 ![Python](https://img.shields.io/badge/Python-3.10+-green?style=flat-square)
 ![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-orange?style=flat-square)
 ![License](https://img.shields.io/badge/License-MIT-yellow?style=flat-square)

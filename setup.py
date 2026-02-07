@@ -5,12 +5,23 @@ A hot-pluggable knowledge injection system for frozen Transformers.
 """
 from setuptools import setup, find_packages
 
+# 从包中读取版本号，确保单一版本源
+def get_version():
+    """从 aga/__init__.py 读取版本号"""
+    import re
+    with open("aga/__init__.py", "r", encoding="utf-8") as f:
+        content = f.read()
+    match = re.search(r'^__version__\s*=\s*["\']([^"\']+)["\']', content, re.MULTILINE)
+    if match:
+        return match.group(1)
+    raise RuntimeError("Unable to find version string.")
+
 with open("README.md", "r", encoding="utf-8") as f:
     long_description = f.read()
 
 setup(
     name="aga",
-    version="3.4.0",
+    version=get_version(),
     author="Lucas Ma",
     author_email="lucas_ma2025@126.com",
     description="Auxiliary Governed Attention - Zero-training knowledge injection for frozen Transformers",
