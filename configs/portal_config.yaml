@@ -1,0 +1,67 @@
+# AGA Portal 配置文件
+#
+# 用于独立部署的 Portal API 服务
+#
+# 使用方式:
+#   python -m aga.portal --config configs/portal_config.yaml
+
+server:
+    host: "0.0.0.0"
+    port: 8081
+    workers: 4
+    reload: false
+    log_level: "info"
+    cors_enabled: true
+    cors_origins:
+        - "*"
+
+# 持久化配置
+# 生产环境建议使用 PostgreSQL
+persistence:
+    # 类型: sqlite, postgres, memory
+    type: "sqlite"
+
+    # SQLite 配置 (开发/测试)
+    sqlite_path: "aga_portal.db"
+
+    # PostgreSQL 配置 (生产)
+    # postgres_url: "postgresql://aga:password@localhost:5432/aga_portal"
+    # postgres_pool_size: 20
+    # postgres_max_overflow: 30
+
+# 消息队列配置
+# 用于同步知识变更到 Runtime
+messaging:
+    # 后端: redis, kafka, memory
+    backend: "redis"
+
+    # Redis 配置
+    redis_host: "localhost"
+    redis_port: 6379
+    redis_db: 0
+    redis_password: null
+    redis_channel: "aga:sync"
+
+    # Kafka 配置 (大规模部署)
+    # kafka_bootstrap_servers: "localhost:9092"
+    # kafka_topic: "aga-sync"
+    # kafka_group_id: "aga-portal"
+
+# Runtime 注册表
+registry:
+    # 类型: redis, memory
+    type: "redis"
+    key_prefix: "aga:runtime:"
+    heartbeat_interval: 30
+    timeout: 90
+
+# 内置治理 (建议使用外部治理系统)
+governance:
+    enabled: false
+    auto_confirm_after_hits: 100
+    auto_deprecate_after_days: 30
+    auto_quarantine_on_error: true
+
+# 元数据
+version: "3.2.0"
+environment: "development"

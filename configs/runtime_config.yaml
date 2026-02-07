@@ -1,0 +1,72 @@
+# AGA Runtime 配置文件
+#
+# 用于与 LLM 同部署的 AGA 执行模块
+#
+# 使用方式:
+#   from aga.config import load_config, RuntimeConfig
+#   config = load_config("configs/runtime_config.yaml", RuntimeConfig)
+#   agent = RuntimeAgent(config)
+
+# 实例标识
+instance_id: "runtime-001"
+namespace: "default"
+namespaces:
+    - "default"
+    - "production"
+
+# AGA 模块配置
+aga:
+    hidden_dim: 4096
+    bottleneck_dim: 64
+    num_slots: 100
+    num_heads: 32
+
+    # 熵门控
+    entropy_threshold: 0.5
+    high_entropy_threshold: 0.7
+    use_adaptive_threshold: true
+
+    # 衰减
+    decay_enabled: true
+    decay_lambda: 0.95
+    decay_hard_reset_threshold: 3.0
+
+    # 路由
+    top_k_slots: 3
+    temperature: 1.0
+
+# 同步配置
+sync:
+    portal_url: "http://localhost:8081"
+    backend: "redis"
+
+    # Redis 配置
+    redis_host: "localhost"
+    redis_port: 6379
+    redis_db: 0
+    redis_password: null
+    redis_channel: "aga:sync"
+
+    # Kafka 配置
+    # kafka_bootstrap_servers: "localhost:9092"
+    # kafka_topic: "aga-sync"
+    # kafka_group_id: null  # 默认使用 instance_id
+
+    # 启动同步
+    sync_on_start: true
+    sync_timeout: 30
+
+# 本地缓存
+cache:
+    type: "memory"
+    max_slots: 100
+    # file_path: null  # 仅 type=file 时使用
+    checkpoint_interval: 300
+
+# 设备配置
+device: "cuda" # cuda, cpu
+dtype: "float16" # float16, float32, bfloat16
+
+# 元数据
+version: "3.2.0"
+environment: "development"

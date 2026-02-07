@@ -14,7 +14,7 @@ except ImportError:
     OpenAI = None
     AsyncOpenAI = None
 
-from core.exceptions import LLMConnectionError, LLMResponseError
+from aga.exceptions import LLMConnectionError, LLMResponseError
 
 
 class DeepSeekClient:

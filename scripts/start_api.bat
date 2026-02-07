@@ -115,7 +115,8 @@ if %ERRORLEVEL% neq 0 (
 REM 显示配置
 echo.
 echo ============================================================
-echo            AGA REST API v3.1
+echo            AGA REST API (Demo Mode)
+echo            Version: 3.4.0
 echo ============================================================
 echo.
 echo   主机:           %HOST%:%PORT%

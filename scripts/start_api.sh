@@ -136,7 +136,8 @@ python3 -c "import fastapi" 2>/dev/null || {
 # 显示配置
 echo ""
 echo -e "${BLUE}============================================================${NC}"
-echo -e "${BLUE}           AGA REST API v3.1${NC}"
+echo -e "${BLUE}           AGA REST API (Demo Mode)${NC}"
+echo -e "${BLUE}           Version: 3.4.0${NC}"
 echo -e "${BLUE}============================================================${NC}"
 echo ""
 echo -e "  主机:           ${GREEN}${HOST}:${PORT}${NC}"
