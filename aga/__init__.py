@@ -49,8 +49,8 @@ await persistence.save_aga_state(aga_modules[-1])
 ```
 """
 
-# 版本信息
-__version__ = "3.2.0"
+# 版本信息 - 单一版本源
+__version__ = "3.4.0"
 __author__ = "AGA Team"
 
 # ==================== 类型定义 ====================

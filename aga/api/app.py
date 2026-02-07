@@ -26,6 +26,7 @@ except ImportError:
 
 from .service import AGAService, ServiceConfig
 from .routes import create_routers
+from .. import __version__ as AGA_VERSION
 
 logger = logging.getLogger(__name__)
 
@@ -137,7 +138,7 @@ def create_api_app(
 
 服务层集成了 AGA 的 KnowledgeWriter 和 PersistenceManager。
         """,
-        version="3.1.0",
+        version=AGA_VERSION,
         lifespan=lifespan,
         docs_url="/docs",
         redoc_url="/redoc",

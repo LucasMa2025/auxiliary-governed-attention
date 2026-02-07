@@ -541,11 +541,18 @@ class AGAService:
             aga = self._get_or_create_aga(namespace)
             new_lc_state = LifecycleState(new_state)
             
-            # 更新 AGA
+            # 查找槽位
             slots = aga.get_slot_by_lu_id(lu_id)
             if not slots:
                 raise ValueError(f"Knowledge {lu_id} not found in namespace {namespace}")
             
+            # 获取旧状态（取第一个槽位的状态，通常同一 lu_id 的所有槽位状态一致）
+            old_state = None
+            if slots:
+                slot_info = aga.get_slot_info(slots[0])
+                old_state = slot_info.lifecycle_state.value
+            
+            # 更新 AGA
             for slot_idx in slots:
                 aga.update_lifecycle(slot_idx, new_lc_state)
             
@@ -557,7 +564,7 @@ class AGAService:
                 "success": True,
                 "lu_id": lu_id,
                 "namespace": namespace,
-                "old_state": None,  # TODO: 记录旧状态
+                "old_state": old_state,
                 "new_state": new_state,
                 "reason": reason,
                 "timestamp": datetime.utcnow().isoformat(),

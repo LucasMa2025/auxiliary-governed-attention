@@ -1,5 +1,5 @@
 """
-AGA 持久化层
+AGA 持久化层 (v3)
 
 提供多适配器持久化支持：
 - SQLite: 开发/测试环境
@@ -17,6 +17,25 @@ v3.2 新增 Portal 扩展接口支持：
 - save_knowledge(): 简化知识保存接口
 - load_knowledge(): 简化知识加载接口
 - query_knowledge(): 查询知识列表
+
+迁移说明：
+-----------
+本模块 (aga.persistence) 是推荐使用的持久化接口。
+旧版 aga.persistence (单文件) 已弃用，将在 v4.0 移除。
+
+推荐用法：
+    from aga.persistence import SQLiteAdapter, PersistenceManager, create_adapter
+    
+    # 使用工厂函数
+    adapter = create_adapter("sqlite", db_path="aga.db")
+    
+    # 或直接实例化
+    adapter = SQLiteAdapter(db_path="aga.db")
+    manager = PersistenceManager(adapter, namespace="default")
+
+旧版兼容（已弃用）：
+    from aga.persistence import SQLitePersistence, AGAPersistenceManager
+    # 这些类仍可用，但会发出弃用警告
 """
 from .base import (
     PersistenceAdapter,
@@ -83,15 +102,43 @@ def create_adapter(adapter_type: str, **kwargs) -> PersistenceAdapter:
         raise ValueError(f"Unknown adapter type: {adapter_type}")
 
 
-# 兼容旧版 persistence.py 的导入
+# 兼容旧版 persistence.py 的导入（已弃用，将在 v4.0 移除）
+import warnings
+
 try:
     from ..persistence import (
-        SQLitePersistence,
-        AGAPersistenceManager,
-        AGAPersistence,
+        SQLitePersistence as _LegacySQLitePersistence,
+        AGAPersistenceManager as _LegacyAGAPersistenceManager,
+        AGAPersistence as _LegacyAGAPersistence,
         KnowledgeRecord as LegacyKnowledgeRecord,
     )
     _HAS_LEGACY = True
+    
+    # 包装旧版类以发出弃用警告
+    class SQLitePersistence(_LegacySQLitePersistence):
+        """[已弃用] 请使用 SQLiteAdapter 替代"""
+        def __init__(self, *args, **kwargs):
+            warnings.warn(
+                "SQLitePersistence 已弃用，将在 v4.0 移除。请使用 SQLiteAdapter 替代。",
+                DeprecationWarning,
+                stacklevel=2
+            )
+            super().__init__(*args, **kwargs)
+    
+    class AGAPersistenceManager(_LegacyAGAPersistenceManager):
+        """[已弃用] 请使用 PersistenceManager 替代"""
+        def __init__(self, *args, **kwargs):
+            warnings.warn(
+                "AGAPersistenceManager 已弃用，将在 v4.0 移除。请使用 PersistenceManager 替代。",
+                DeprecationWarning,
+                stacklevel=2
+            )
+            super().__init__(*args, **kwargs)
+    
+    class AGAPersistence(_LegacyAGAPersistence):
+        """[已弃用] 请使用 PersistenceAdapter 替代"""
+        pass  # 抽象类，不需要警告
+        
 except ImportError:
     _HAS_LEGACY = False
     SQLitePersistence = None

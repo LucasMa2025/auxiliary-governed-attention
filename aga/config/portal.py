@@ -10,6 +10,12 @@ Portal 是无 GPU 依赖的 API 服务，负责：
 from dataclasses import dataclass, field
 from typing import Optional, Dict, Any, List
 
+# 导入统一版本号
+try:
+    from .. import __version__ as AGA_VERSION
+except ImportError:
+    AGA_VERSION = "3.4.0"  # 回退默认值
+
 
 @dataclass
 class ServerConfig:
@@ -107,7 +113,7 @@ class PortalConfig:
     governance: GovernanceConfig = field(default_factory=GovernanceConfig)
     
     # 元数据
-    version: str = "3.2.0"
+    version: str = field(default_factory=lambda: AGA_VERSION)
     environment: str = "development"  # development, staging, production
     
     @classmethod
@@ -183,6 +189,6 @@ class PortalConfig:
             messaging=MessagingConfig(**data.get("messaging", {})),
             registry=RegistryConfig(**data.get("registry", {})),
             governance=GovernanceConfig(**data.get("governance", {})),
-            version=data.get("version", "3.2.0"),
+            version=data.get("version", AGA_VERSION),
             environment=data.get("environment", "development"),
         )

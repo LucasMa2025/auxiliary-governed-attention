@@ -1,6 +1,22 @@
 """
-AGA 数据持久化模块 v2.0
+AGA 数据持久化模块 v2.0 [已弃用]
 
+⚠️ 弃用警告：
+    本模块已弃用，将在 v4.0 移除。
+    请使用 aga.persistence 包（v3）替代：
+    
+    # 旧版（已弃用）
+    from aga.persistence import SQLitePersistence, AGAPersistenceManager
+    
+    # 新版（推荐）
+    from aga.persistence import SQLiteAdapter, PersistenceManager, create_adapter
+    
+    迁移指南：
+    - SQLitePersistence → SQLiteAdapter
+    - AGAPersistenceManager → PersistenceManager
+    - AGAPersistence → PersistenceAdapter
+
+原功能说明：
 支持将 AGA 状态持久化到数据库，避免停机失效。
 
 v2.0 优化：

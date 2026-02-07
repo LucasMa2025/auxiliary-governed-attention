@@ -266,7 +266,8 @@ def generate_prometheus_rules_yaml(
     """生成 Prometheus 告警规则 YAML"""
     import yaml
     config = generate_prometheus_rules(rules, group_name)
-    return yaml.dump(config, default_flow_style=False, allow_unicode=True)
+    # sort_keys=False 避免每次生成的 YAML 字段顺序不同导致 git diff 噪音
+    return yaml.dump(config, default_flow_style=False, allow_unicode=True, sort_keys=False)
 
 
 # ==================== Grafana 仪表盘 ====================
@@ -884,36 +885,53 @@ class AlertManager:
                 logger.error(f"Error evaluating rule {rule.name}: {e}")
     
     def _evaluate_rule(self, rule: AlertRule, metrics: Dict[str, Any]) -> bool:
-        """评估告警规则（简化版）"""
-        # 这是一个简化实现，实际应使用 PromQL 解析器
-        # 这里只处理一些常见的简单表达式
+        """
+        评估告警规则（简化版）
         
+        注意：这是一个简化实现，只支持基础比较。
+        生产环境应使用 Prometheus Alertmanager 进行完整的 PromQL 评估。
+        """
         expr = rule.expr
         
-        # 简单的指标比较
-        if ">" in expr:
-            parts = expr.split(">")
-            metric_name = parts[0].strip().split("{")[0]
-            threshold = float(parts[1].strip())
+        try:
+            # 提取指标名（去除 labels 和函数调用）
+            metric_name = expr.split("{")[0].split("(")[-1].strip()
             
-            value = metrics.get(metric_name, 0)
-            return value > threshold
-        
-        elif "<" in expr:
-            parts = expr.split("<")
-            metric_name = parts[0].strip().split("{")[0]
-            threshold = float(parts[1].strip())
+            # 简单的指标比较
+            if ">=" in expr:
+                parts = expr.split(">=")
+                threshold = float(parts[1].strip())
+                value = metrics.get(metric_name, 0)
+                return value >= threshold
             
-            value = metrics.get(metric_name, 0)
-            return value < threshold
-        
-        elif "==" in expr:
-            parts = expr.split("==")
-            metric_name = parts[0].strip().split("{")[0]
-            expected = float(parts[1].strip())
+            elif "<=" in expr:
+                parts = expr.split("<=")
+                threshold = float(parts[1].strip())
+                value = metrics.get(metric_name, 0)
+                return value <= threshold
             
-            value = metrics.get(metric_name, 0)
-            return value == expected
+            elif ">" in expr and "=" not in expr.split(">")[1][:1]:
+                parts = expr.split(">")
+                threshold = float(parts[1].strip())
+                value = metrics.get(metric_name, 0)
+                return value > threshold
+            
+            elif "<" in expr and "=" not in expr.split("<")[1][:1]:
+                parts = expr.split("<")
+                threshold = float(parts[1].strip())
+                value = metrics.get(metric_name, 0)
+                return value < threshold
+            
+            elif "==" in expr:
+                parts = expr.split("==")
+                expected = float(parts[1].strip())
+                value = metrics.get(metric_name, 0)
+                return value == expected
+            
+        except (ValueError, IndexError) as e:
+            # 复杂表达式无法本地评估，返回 False（安全默认）
+            logger.debug(f"Cannot evaluate complex expr '{expr}': {e}")
+            return False
         
         return False
     

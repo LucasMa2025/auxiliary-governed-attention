@@ -758,3 +758,10 @@ def get_logger(name: str, **kwargs) -> StructuredLogger:
     """获取结构化日志记录器"""
     return StructuredLogger(name, **kwargs)
 
+
+# ==================== 别名（向后兼容） ====================
+AGAConfigError = ConfigurationError
+AGAInjectionError = InjectionError
+AGARoutingError = AGAException  # 路由错误使用基类
+AGAPersistenceError = PersistenceError
+AGAGateError = AGAException  # 门控错误使用基类
