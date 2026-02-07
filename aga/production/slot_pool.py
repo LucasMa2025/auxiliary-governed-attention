@@ -6,6 +6,14 @@ AGA 槽位池管理
 - 保证 O(1) 推理复杂度
 - LRU + hit_count 混合淘汰策略
 - 线程安全
+
+版本: v1.1
+
+v1.1 更新:
+- 增强 get_vectors 的空槽位处理
+- 改进 record_hits 的索引有效性检查
+- 优化淘汰策略的边界条件处理
+- 添加 import_slots 的数据完整性验证
 """
 import time
 import threading
@@ -396,13 +404,18 @@ class SlotPool:
         self._cache_dirty = False
     
     def record_hits(self, slot_indices: List[int]):
-        """记录命中"""
+        """记录命中（带索引有效性检查）"""
         with self._lock:
-            hit_set = set(slot_indices)
+            # 过滤无效索引
+            valid_indices = set()
+            for idx in slot_indices:
+                if 0 <= idx < self.max_slots and idx in self._slots:
+                    valid_indices.add(idx)
+            
             for slot_idx, slot in self._slots.items():
                 if slot.lifecycle_state == LifecycleState.QUARANTINED:
                     continue
-                if slot_idx in hit_set:
+                if slot_idx in valid_indices:
                     slot.record_hit()
                     self._total_hits += 1
                 else:
@@ -494,16 +507,55 @@ class SlotPool:
             return [slot.to_dict() for slot in self._slots.values()]
     
     def import_slots(self, slots_data: List[Dict[str, Any]]):
-        """导入槽位"""
+        """导入槽位（带数据完整性验证）"""
         with self._lock:
+            imported_count = 0
+            skipped_count = 0
+            
             for data in slots_data:
-                slot = Slot.from_dict(data, self.device)
-                if slot.slot_idx < self.max_slots:
+                try:
+                    # 验证必要字段
+                    if 'slot_idx' not in data or 'lu_id' not in data:
+                        logger.warning(f"Skipping slot with missing required fields")
+                        skipped_count += 1
+                        continue
+                    
+                    # 验证向量数据
+                    if 'key_vector' not in data or 'value_vector' not in data:
+                        logger.warning(f"Skipping slot {data.get('lu_id')} with missing vectors")
+                        skipped_count += 1
+                        continue
+                    
+                    # 验证向量维度
+                    key_vec = data['key_vector']
+                    value_vec = data['value_vector']
+                    if not key_vec or not value_vec:
+                        logger.warning(f"Skipping slot {data.get('lu_id')} with empty vectors")
+                        skipped_count += 1
+                        continue
+                    
+                    slot = Slot.from_dict(data, self.device)
+                    
+                    if slot.slot_idx >= self.max_slots:
+                        logger.warning(f"Skipping slot {slot.lu_id} with invalid index {slot.slot_idx}")
+                        skipped_count += 1
+                        continue
+                    
                     self._slots[slot.slot_idx] = slot
                     self._lu_id_to_slot[slot.lu_id] = slot.slot_idx
                     if slot.slot_idx in self._free_indices:
                         self._free_indices.remove(slot.slot_idx)
+                    
+                    imported_count += 1
+                    
+                except Exception as e:
+                    logger.warning(f"Failed to import slot: {e}")
+                    skipped_count += 1
+            
             self._cache_dirty = True
+            
+            if skipped_count > 0:
+                logger.info(f"Imported {imported_count} slots, skipped {skipped_count}")
 
 
 class SlotSubspacePool:

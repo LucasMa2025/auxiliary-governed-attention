@@ -41,6 +41,9 @@ class SyncPublisher:
         await publisher.disconnect()
     """
     
+    # 最大超时保护
+    MAX_ACK_TIMEOUT = 60
+    
     def __init__(
         self,
         backend_type: str = "redis",
@@ -59,13 +62,20 @@ class SyncPublisher:
             ack_timeout: 确认超时（秒）
             **backend_kwargs: 后端配置
         """
+        # 验证 backend_type
+        valid_backends = {"memory", "redis", "kafka"}
+        if backend_type not in valid_backends:
+            raise ValueError(f"Unknown backend_type '{backend_type}'. Valid options: {valid_backends}")
+        
         self.channel = channel
         self.require_ack = require_ack
-        self.ack_timeout = ack_timeout
+        # 限制最大超时
+        self.ack_timeout = min(ack_timeout, self.MAX_ACK_TIMEOUT)
         
         self._backend = create_backend(backend_type, **backend_kwargs)
         self._pending_acks: Dict[str, asyncio.Event] = {}
         self._ack_results: Dict[str, List[SyncAck]] = {}
+        self._ack_lock = asyncio.Lock()  # 保护 ACK 结果
         
         # 统计
         self._stats = {
@@ -92,26 +102,37 @@ class SyncPublisher:
     
     async def _handle_ack(self, message: SyncMessage):
         """处理 ACK 消息"""
-        if message.message_type == MessageType.ACK:
-            correlation_id = message.correlation_id
-            if correlation_id and correlation_id in self._pending_acks:
-                ack = SyncAck(
-                    message_id=correlation_id,
-                    instance_id=message.source_instance or "unknown",
-                    success=True,
-                    metadata=message.metadata,
-                )
-                
-                if correlation_id not in self._ack_results:
-                    self._ack_results[correlation_id] = []
-                self._ack_results[correlation_id].append(ack)
-                
-                # 设置事件（如果只需要一个 ACK）
-                event = self._pending_acks.get(correlation_id)
-                if event:
-                    event.set()
-                
-                self._stats["acks_received"] += 1
+        if message.message_type not in (MessageType.ACK, MessageType.NACK):
+            return
+        
+        correlation_id = message.correlation_id
+        if not correlation_id:
+            logger.debug("Received ACK without correlation_id, ignoring")
+            return
+        
+        if correlation_id not in self._pending_acks:
+            # 可能是超时后收到的 ACK，或者是其他实例的 ACK
+            logger.debug(f"Received ACK for unknown correlation_id: {correlation_id[:8]}...")
+            return
+        
+        async with self._ack_lock:
+            ack = SyncAck(
+                message_id=correlation_id,
+                instance_id=message.source_instance or "unknown",
+                success=(message.message_type == MessageType.ACK),
+                metadata=message.metadata,
+            )
+            
+            if correlation_id not in self._ack_results:
+                self._ack_results[correlation_id] = []
+            self._ack_results[correlation_id].append(ack)
+        
+        # 设置事件（如果只需要一个 ACK）
+        event = self._pending_acks.get(correlation_id)
+        if event:
+            event.set()
+        
+        self._stats["acks_received"] += 1
     
     async def publish(
         self,
@@ -186,6 +207,13 @@ class SyncPublisher:
         wait_for_ack: bool = None,
     ) -> Dict[str, Any]:
         """发布知识注入消息"""
+        # 验证向量
+        if not key_vector or not value_vector:
+            return {
+                "success": False,
+                "error": "key_vector and value_vector cannot be empty",
+            }
+        
         message = SyncMessage.inject(
             lu_id=lu_id,
             key_vector=key_vector,
@@ -281,8 +309,11 @@ class SyncPublisher:
     
     def get_stats(self) -> Dict[str, Any]:
         """获取统计信息"""
+        connected = self._backend.is_connected
         return {
             **self._stats,
             "channel": self.channel,
-            "connected": self._backend.is_connected,
+            "connected": connected,
+            "status": "healthy" if connected else "degraded",
+            "pending_acks_count": len(self._pending_acks),
         }

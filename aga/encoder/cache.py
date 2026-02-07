@@ -9,7 +9,13 @@ AGA 编码器缓存模块
 - 缓存命中率统计
 - 可选持久化缓存
 
-版本: v1.0
+版本: v1.1
+
+v1.1 更新:
+- 改进缓存键生成（使用更快的哈希）
+- 增强持久化缓存的错误处理
+- 优化批量编码的并行处理
+- 添加缓存统计的 NaN 保护
 """
 import hashlib
 import threading
@@ -24,6 +30,13 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# 尝试使用更快的哈希库
+try:
+    import xxhash
+    _HAS_XXHASH = True
+except ImportError:
+    _HAS_XXHASH = False
+
 
 @dataclass
 class CacheStats:
@@ -36,19 +49,29 @@ class CacheStats:
     
     @property
     def hit_rate(self) -> float:
-        """缓存命中率"""
+        """缓存命中率（带 NaN 保护）"""
         total = self.hits + self.misses
-        return self.hits / total if total > 0 else 0.0
+        if total == 0:
+            return 0.0
+        rate = self.hits / total
+        # NaN 保护
+        return rate if rate == rate else 0.0  # NaN != NaN
     
     @property
     def avg_encode_time_ms(self) -> float:
-        """平均编码时间"""
-        return self.total_encode_time_ms / max(1, self.misses)
+        """平均编码时间（带 NaN 保护）"""
+        if self.misses == 0:
+            return 0.0
+        avg = self.total_encode_time_ms / self.misses
+        return avg if avg == avg else 0.0
     
     @property
     def avg_cache_time_ms(self) -> float:
-        """平均缓存查询时间"""
-        return self.total_cache_time_ms / max(1, self.hits)
+        """平均缓存查询时间（带 NaN 保护）"""
+        if self.hits == 0:
+            return 0.0
+        avg = self.total_cache_time_ms / self.hits
+        return avg if avg == avg else 0.0
     
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -200,10 +223,15 @@ class CachedEncoder:
         self._lock = threading.RLock() if self.config.thread_safe else None
     
     def _make_cache_key(self, text: str, target_dim: Optional[int] = None) -> str:
-        """生成缓存键"""
-        # 使用 MD5 哈希作为键（避免长文本作为键）
+        """生成缓存键（使用更快的哈希）"""
         content = f"{text}:{target_dim}" if target_dim else text
-        return hashlib.md5(content.encode('utf-8')).hexdigest()
+        content_bytes = content.encode('utf-8')
+        
+        # 优先使用 xxhash（更快）
+        if _HAS_XXHASH:
+            return xxhash.xxh64(content_bytes).hexdigest()
+        else:
+            return hashlib.md5(content_bytes).hexdigest()
     
     def encode(self, text: str) -> List[float]:
         """
@@ -431,21 +459,36 @@ class PersistentCachedEncoder(CachedEncoder):
         self._load_cache()
     
     def _load_cache(self):
-        """从磁盘加载缓存"""
+        """从磁盘加载缓存（带错误恢复）"""
         import json
         import os
+        import shutil
         
         if not os.path.exists(self.cache_path):
             return
         
         try:
-            with open(self.cache_path, 'r') as f:
+            with open(self.cache_path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
             
+            loaded_count = 0
             for key, value in data.items():
-                self._cache.put(key, value)
+                try:
+                    self._cache.put(key, value)
+                    loaded_count += 1
+                except Exception as e:
+                    logger.warning(f"Failed to load cache entry {key}: {e}")
             
-            logger.info(f"Loaded {len(data)} cache entries from {self.cache_path}")
+            logger.info(f"Loaded {loaded_count}/{len(data)} cache entries from {self.cache_path}")
+            
+        except json.JSONDecodeError as e:
+            # 缓存文件损坏，备份并重建
+            backup_path = f"{self.cache_path}.corrupted"
+            logger.warning(f"Cache file corrupted, backing up to {backup_path}: {e}")
+            try:
+                shutil.move(self.cache_path, backup_path)
+            except Exception:
+                pass
         except Exception as e:
             logger.warning(f"Failed to load cache from {self.cache_path}: {e}")
     
@@ -470,5 +513,9 @@ class PersistentCachedEncoder(CachedEncoder):
         """析构时保存缓存"""
         try:
             self.save_cache()
-        except:
-            pass
+        except Exception as e:
+            # 析构时不应抛出异常
+            try:
+                logger.warning(f"Failed to save cache on destruction: {e}")
+            except Exception:
+                pass  # 日志系统可能已关闭

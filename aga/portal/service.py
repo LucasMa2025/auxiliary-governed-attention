@@ -163,10 +163,15 @@ class PortalService:
         encoder_config = getattr(self.config, 'encoder', None)
         
         if encoder_config:
-            # 从配置创建
+            # 从配置创建（推荐：生产环境应显式指定编码器）
             self._encoder = EncoderFactory.create(encoder_config)
+            logger.info("Encoder created from explicit configuration")
         else:
             # 尝试从环境变量创建，或使用最佳可用
+            logger.warning(
+                "No explicit encoder configuration provided. "
+                "Production environments should specify encoder to ensure consistency."
+            )
             try:
                 self._encoder = EncoderFactory.create_from_env()
             except Exception:
@@ -177,6 +182,9 @@ class PortalService:
         
         # 初始化编码器
         self._encoder.initialize()
+        
+        # 记录编码器签名（用于一致性验证）
+        self._encoder_signature = self.get_encoder_signature()
         
         logger.info(
             f"Encoder initialized: {self._encoder.encoder_type.value} "
@@ -238,6 +246,29 @@ class PortalService:
             注入结果
         """
         self._stats["inject_count"] += 1
+        
+        # 0. 输入验证
+        if not lu_id or not lu_id.strip():
+            return {"success": False, "error": "lu_id cannot be empty"}
+        
+        if not key_vector or not value_vector:
+            return {"success": False, "error": "key_vector and value_vector cannot be empty"}
+        
+        # 验证向量维度与编码器一致
+        expected_key_dim = self._encoder.key_dim
+        expected_value_dim = self._encoder.value_dim
+        
+        if len(key_vector) != expected_key_dim:
+            logger.warning(
+                f"key_vector dimension mismatch for {lu_id}: "
+                f"expected {expected_key_dim}, got {len(key_vector)}"
+            )
+        
+        if len(value_vector) != expected_value_dim:
+            logger.warning(
+                f"value_vector dimension mismatch for {lu_id}: "
+                f"expected {expected_value_dim}, got {len(value_vector)}"
+            )
         
         # 1. 存储元数据
         record = {
@@ -330,7 +361,13 @@ class PortalService:
         
         # 在 metadata 中记录编码器签名（用于审计和一致性验证）
         enriched_metadata = metadata.copy() if metadata else {}
-        enriched_metadata["encoder_signature"] = self.get_encoder_signature()
+        # 只在首次注入时记录完整签名，后续只记录 hash
+        existing = await self._persistence.load_knowledge(namespace, lu_id)
+        if existing and existing.get("metadata", {}).get("encoder_signature"):
+            # 已有签名，只更新 hash
+            enriched_metadata["encoder_signature_hash"] = hash(str(self.get_encoder_signature()))
+        else:
+            enriched_metadata["encoder_signature"] = self.get_encoder_signature()
         enriched_metadata["encoded_by"] = "portal"
         
         # 调用原有的注入方法
@@ -679,7 +716,11 @@ class PortalService:
             "source": "portal",
         }
         
-        await self._persistence.save_audit_log(log_entry)
+        try:
+            await self._persistence.save_audit_log(log_entry)
+        except Exception as e:
+            # 审计日志失败不应阻塞主流程
+            logger.error(f"Failed to save audit log: {e}")
     
     async def get_audit_log(
         self,

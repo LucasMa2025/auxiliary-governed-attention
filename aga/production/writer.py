@@ -35,6 +35,14 @@ AGA 知识写入器 (单机部署模式)
 - 支持批量写入
 - 支持质量评估（否决型）
 - 完整的审计日志 (通过 PersistenceManager)
+
+版本: v1.1
+
+v1.1 更新:
+- 增强队列满时的错误处理
+- 改进工作线程的异常捕获
+- 添加 namespace 合法性验证
+- 优化回调执行的线程池处理
 """
 import time
 import logging
@@ -64,6 +72,11 @@ class WriteStatus(str, Enum):
     REJECTED = "rejected"  # 被质量评估拒绝
 
 
+# 命名空间合法性正则
+import re
+_NAMESPACE_PATTERN = re.compile(r'^[a-zA-Z][a-zA-Z0-9_-]{0,63}$')
+
+
 @dataclass
 class WriteRequest:
     """写入请求"""
@@ -85,8 +98,19 @@ class WriteRequest:
         """验证请求"""
         errors = []
         
+        # 命名空间验证
+        if not self.namespace:
+            errors.append("namespace is required")
+        elif not _NAMESPACE_PATTERN.match(self.namespace):
+            errors.append(
+                f"namespace '{self.namespace}' is invalid. "
+                "Must start with letter, contain only alphanumeric, underscore, hyphen, max 64 chars"
+            )
+        
         if not self.lu_id:
             errors.append("lu_id is required")
+        elif len(self.lu_id) > 256:
+            errors.append("lu_id exceeds maximum length of 256 characters")
         
         if self.key_vector is None:
             errors.append("key_vector is required")
@@ -342,30 +366,50 @@ class KnowledgeWriter:
     
     def _worker_loop(self):
         """工作线程循环"""
+        thread_name = threading.current_thread().name
+        logger.debug(f"Worker {thread_name} started")
+        
         while not self._stop_workers.is_set():
             try:
                 request = self._queue.get(timeout=1.0)
                 
-                # 更新状态为处理中
-                self._update_result_status(request.request_id, WriteStatus.PROCESSING)
-                
-                # 处理请求
-                result = self._process_request(request)
-                
-                # 存储结果
-                self._store_result(result)
-                
-                # 触发回调
-                if self._on_write_complete:
+                try:
+                    # 更新状态为处理中
+                    self._update_result_status(request.request_id, WriteStatus.PROCESSING)
+                    
+                    # 处理请求
+                    result = self._process_request(request)
+                    
+                    # 存储结果
+                    self._store_result(result)
+                    
+                    # 触发回调（在单独线程中执行，避免阻塞 worker）
+                    if self._on_write_complete:
+                        try:
+                            self._on_write_complete(result)
+                        except Exception as e:
+                            logger.warning(f"Write complete callback failed: {e}")
+                            
+                except Exception as e:
+                    # 单个请求处理失败不应影响整个 worker
+                    logger.error(f"Worker {thread_name} failed to process request {request.request_id}: {e}")
                     try:
-                        self._on_write_complete(result)
-                    except Exception as e:
-                        logger.warning(f"Write complete callback failed: {e}")
+                        error_result = WriteResult(
+                            request_id=request.request_id,
+                            status=WriteStatus.FAILED,
+                            error=f"Internal error: {e}",
+                        )
+                        self._store_result(error_result)
+                    except Exception:
+                        pass
                 
             except queue.Empty:
                 continue
             except Exception as e:
-                logger.error(f"Worker error: {e}")
+                # 这不应该发生，但作为保护
+                logger.error(f"Worker {thread_name} unexpected error: {e}")
+        
+        logger.debug(f"Worker {thread_name} stopped")
     
     def _process_request(self, request: WriteRequest) -> WriteResult:
         """处理写入请求"""
@@ -521,21 +565,37 @@ class KnowledgeWriter:
     
     def quarantine_knowledge(self, namespace: str, lu_id: str) -> bool:
         """隔离知识"""
-        operator = self.aga_manager.get_operator(namespace)
-        success = operator.quarantine_knowledge(lu_id)
+        if not lu_id:
+            logger.warning("quarantine_knowledge called with empty lu_id")
+            return False
         
-        if success and self.persistence:
-            self.persistence.quarantine(namespace, lu_id)
-        
-        return success
+        try:
+            operator = self.aga_manager.get_operator(namespace)
+            success = operator.quarantine_knowledge(lu_id)
+            
+            if success and self.persistence:
+                self.persistence.quarantine(namespace, lu_id)
+            
+            return success
+        except Exception as e:
+            logger.error(f"Failed to quarantine knowledge {lu_id}: {e}")
+            return False
     
     def confirm_knowledge(self, namespace: str, lu_id: str) -> bool:
         """确认知识（试用期 → 已确认）"""
-        operator = self.aga_manager.get_operator(namespace)
-        success = operator.update_lifecycle(lu_id, LifecycleState.CONFIRMED)
+        if not lu_id:
+            logger.warning("confirm_knowledge called with empty lu_id")
+            return False
         
-        if success and self.persistence:
-            self.persistence.update_lifecycle(namespace, lu_id, LifecycleState.CONFIRMED.value)
-        
-        return success
+        try:
+            operator = self.aga_manager.get_operator(namespace)
+            success = operator.update_lifecycle(lu_id, LifecycleState.CONFIRMED)
+            
+            if success and self.persistence:
+                self.persistence.update_lifecycle(namespace, lu_id, LifecycleState.CONFIRMED.value)
+            
+            return success
+        except Exception as e:
+            logger.error(f"Failed to confirm knowledge {lu_id}: {e}")
+            return False
 

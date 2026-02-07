@@ -3,7 +3,13 @@ AGA SQLite 持久化适配器
 
 用于开发/测试环境，支持完整的持久化功能。
 
-版本: v3.0
+版本: v3.1
+
+v3.1 更新:
+- 增强事务支持和错误处理
+- 添加 WAL 模式支持提升并发性能
+- 改进审计日志的重试机制
+- 优化批量操作的原子性
 """
 import asyncio
 import json
@@ -14,11 +20,16 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 import logging
+import time
 
-from .base import PersistenceAdapter, KnowledgeRecord, PersistenceError
+from .base import PersistenceAdapter, KnowledgeRecord, PersistenceError, SerializationError
 from ..types import LifecycleState
 
 logger = logging.getLogger(__name__)
+
+# 重试配置
+MAX_RETRY_ATTEMPTS = 3
+RETRY_DELAY_BASE = 0.1  # 秒
 
 
 class SQLiteAdapter(PersistenceAdapter):
@@ -30,12 +41,15 @@ class SQLiteAdapter(PersistenceAdapter):
     - 审计日志
     - 索引优化
     - 事务支持
+    - WAL 模式提升并发性能
     """
     
     def __init__(
         self,
         db_path: str = "aga_data.db",
         enable_audit: bool = True,
+        enable_wal: bool = True,
+        busy_timeout_ms: int = 5000,
     ):
         """
         初始化 SQLite 适配器
@@ -43,21 +57,52 @@ class SQLiteAdapter(PersistenceAdapter):
         Args:
             db_path: 数据库文件路径
             enable_audit: 是否启用审计日志
+            enable_wal: 是否启用 WAL 模式（提升并发性能）
+            busy_timeout_ms: 忙等待超时时间（毫秒）
         """
         self.db_path = db_path
         self.enable_audit = enable_audit
+        self.enable_wal = enable_wal
+        self.busy_timeout_ms = busy_timeout_ms
         self._lock = threading.RLock()
         self._connected = False
+        self._schema_version = 1  # 用于未来 schema 迁移
     
     @contextmanager
     def _get_conn(self):
         """获取数据库连接（上下文管理器）"""
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(
+            self.db_path,
+            timeout=self.busy_timeout_ms / 1000.0,
+            check_same_thread=False,
+        )
         conn.row_factory = sqlite3.Row
+        
+        # 启用 WAL 模式
+        if self.enable_wal:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
+        
         try:
             yield conn
         finally:
             conn.close()
+    
+    def _retry_on_busy(self, func, *args, **kwargs):
+        """在数据库忙时重试操作"""
+        last_error = None
+        for attempt in range(MAX_RETRY_ATTEMPTS):
+            try:
+                return func(*args, **kwargs)
+            except sqlite3.OperationalError as e:
+                if "database is locked" in str(e) or "busy" in str(e).lower():
+                    last_error = e
+                    delay = RETRY_DELAY_BASE * (2 ** attempt)
+                    logger.warning(f"Database busy, retrying in {delay:.2f}s (attempt {attempt + 1}/{MAX_RETRY_ATTEMPTS})")
+                    time.sleep(delay)
+                else:
+                    raise
+        raise last_error
     
     def _init_tables(self):
         """初始化数据库表"""
@@ -138,11 +183,11 @@ class SQLiteAdapter(PersistenceAdapter):
         new_state: Optional[str],
         details: Optional[str],
     ):
-        """记录审计日志"""
+        """记录审计日志（带重试机制）"""
         if not self.enable_audit:
             return
         
-        try:
+        def _do_log():
             with self._get_conn() as conn:
                 cursor = conn.cursor()
                 now = datetime.now().isoformat()
@@ -152,8 +197,12 @@ class SQLiteAdapter(PersistenceAdapter):
                     VALUES (?, ?, ?, ?, ?, ?, ?)
                 ''', (namespace, lu_id, action, old_state, new_state, details, now))
                 conn.commit()
+        
+        try:
+            self._retry_on_busy(_do_log)
         except Exception as e:
-            logger.warning(f"Failed to log audit: {e}")
+            # 审计日志失败不应影响主流程，但需要记录
+            logger.warning(f"Failed to log audit after retries: {e}")
     
     # ==================== 连接管理 ====================
     
@@ -283,20 +332,35 @@ class SQLiteAdapter(PersistenceAdapter):
     # ==================== 批量操作 ====================
     
     async def save_batch(self, namespace: str, records: List[KnowledgeRecord]) -> int:
+        """
+        批量保存（事务原子性）
+        
+        使用单一事务保存所有记录，失败时回滚。
+        """
         if not records:
             return 0
         
         with self._lock:
             success_count = 0
+            failed_records = []
+            
             try:
                 with self._get_conn() as conn:
                     cursor = conn.cursor()
                     now = datetime.now().isoformat()
                     
-                    for record in records:
-                        try:
-                            key_json = json.dumps(record.key_vector)
-                            value_json = json.dumps(record.value_vector)
+                    # 开始事务
+                    cursor.execute("BEGIN TRANSACTION")
+                    
+                    try:
+                        for record in records:
+                            try:
+                                key_json = json.dumps(record.key_vector)
+                                value_json = json.dumps(record.value_vector)
+                            except (TypeError, ValueError) as e:
+                                failed_records.append((record.lu_id, f"Serialization error: {e}"))
+                                continue
+                            
                             metadata_json = json.dumps(record.metadata) if record.metadata else None
                             
                             cursor.execute('''
@@ -315,19 +379,30 @@ class SQLiteAdapter(PersistenceAdapter):
                                 metadata_json, namespace, record.lu_id, now, now
                             ))
                             success_count += 1
-                        except Exception as e:
-                            logger.warning(f"Failed to save record {record.lu_id}: {e}")
-                    
-                    conn.commit()
+                        
+                        # 提交事务
+                        conn.commit()
+                        
+                    except Exception as e:
+                        # 回滚事务
+                        conn.rollback()
+                        logger.error(f"Batch save transaction failed, rolling back: {e}")
+                        raise
+                
+                # 记录失败的记录
+                if failed_records:
+                    for lu_id, reason in failed_records:
+                        logger.warning(f"Failed to save record {lu_id}: {reason}")
                 
                 self._log_audit(
                     namespace, None, "save_batch", 
-                    None, None, f"count={success_count}"
+                    None, None, f"count={success_count}, failed={len(failed_records)}"
                 )
                 return success_count
+                
             except Exception as e:
                 logger.error(f"Failed to save batch: {e}")
-                return success_count
+                return 0
     
     async def load_active_slots(self, namespace: str) -> List[KnowledgeRecord]:
         with self._lock:

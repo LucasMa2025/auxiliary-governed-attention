@@ -129,9 +129,10 @@ class AGARuntime:
         # Softmax
         attn_weights = F.softmax(scores, dim=-1)
         
-        # Top-K 选择
-        if self.config.top_k_slots < key_matrix.size(0):
-            topk_values, topk_indices = torch.topk(attn_weights, self.config.top_k_slots, dim=-1)
+        # Top-K 选择（确保 k 不超过实际槽位数）
+        actual_k = min(self.config.top_k_slots, key_matrix.size(0))
+        if actual_k < key_matrix.size(0):
+            topk_values, topk_indices = torch.topk(attn_weights, actual_k, dim=-1)
             # 稀疏化
             sparse_weights = torch.zeros_like(attn_weights)
             sparse_weights.scatter_(-1, topk_indices, topk_values)
@@ -173,8 +174,14 @@ class AGARuntime:
         # 计算方差作为熵代理
         variance = torch.var(normalized, dim=-1)
         
+        # 处理 NaN/Inf（数值稳定性）
+        variance = torch.nan_to_num(variance, nan=0.0, posinf=1.0, neginf=0.0)
+        
         # 缩放到 [0, 1]
         entropy = torch.sigmoid(variance * 10 - 2)
+        
+        # 确保结果在 [0, 1] 范围内
+        entropy = torch.clamp(entropy, 0.0, 1.0)
         
         return entropy
     
@@ -234,11 +241,20 @@ class AGARuntimeLayer(nn.Module if HAS_TORCH else object):
         # 处理不同的输出格式
         if isinstance(original_output, tuple):
             hidden_out = original_output[0]
-        else:
+        elif isinstance(original_output, torch.Tensor):
             hidden_out = original_output
+        else:
+            # 不支持的输出类型，直接返回原始输出
+            logger.warning(f"Unsupported output type from original layer: {type(original_output)}")
+            return original_output
         
-        # AGA 增强
-        enhanced, _ = self.aga_runtime.forward(hidden_out, attention_mask)
+        # AGA 增强（带错误保护）
+        try:
+            enhanced, _ = self.aga_runtime.forward(hidden_out, attention_mask)
+        except Exception as e:
+            # Fail-open: 出错时返回原始输出
+            logger.error(f"AGA runtime forward failed: {e}")
+            return original_output
         
         # 返回相同格式
         if isinstance(original_output, tuple):

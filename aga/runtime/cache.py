@@ -112,6 +112,19 @@ class LocalCache:
         Returns:
             分配的槽位索引，如果已满返回 None
         """
+        # 输入验证
+        if not lu_id or not lu_id.strip():
+            logger.warning("Invalid lu_id: empty or whitespace")
+            return None
+        
+        if not key_vector or not value_vector:
+            logger.warning(f"Invalid vectors for {lu_id}: empty key or value vector")
+            return None
+        
+        if len(key_vector) != len(value_vector):
+            logger.warning(f"Vector length mismatch for {lu_id}: key={len(key_vector)}, value={len(value_vector)}")
+            # 允许不同长度，只记录警告
+        
         # 检查是否已存在
         if lu_id in self._slots:
             return self._slots[lu_id].slot_idx
@@ -128,12 +141,24 @@ class LocalCache:
         slot_idx = self._allocate_slot_idx()
         
         # 转换向量
-        if HAS_TORCH:
-            key_tensor = torch.tensor(key_vector, device=self._device, dtype=self._dtype)
-            value_tensor = torch.tensor(value_vector, device=self._device, dtype=self._dtype)
-        else:
-            key_tensor = key_vector
-            value_tensor = value_vector
+        try:
+            if HAS_TORCH:
+                key_tensor = torch.tensor(key_vector, device=self._device, dtype=self._dtype)
+                value_tensor = torch.tensor(value_vector, device=self._device, dtype=self._dtype)
+                
+                # 检查 NaN/Inf
+                if torch.isnan(key_tensor).any() or torch.isinf(key_tensor).any():
+                    logger.warning(f"Invalid key_vector for {lu_id}: contains NaN or Inf")
+                    return None
+                if torch.isnan(value_tensor).any() or torch.isinf(value_tensor).any():
+                    logger.warning(f"Invalid value_vector for {lu_id}: contains NaN or Inf")
+                    return None
+            else:
+                key_tensor = key_vector
+                value_tensor = value_vector
+        except (TypeError, ValueError) as e:
+            logger.warning(f"Failed to convert vectors for {lu_id}: {e}")
+            return None
         
         # 创建槽位
         slot = CachedSlot(
@@ -240,7 +265,8 @@ class LocalCache:
         for slot in slots:
             keys.append(slot.key_vector)
             values.append(slot.value_vector)
-            reliabilities.append(reliability_map.get(slot.lifecycle_state, 0.3))
+            # 未知状态 fallback 到 0.0（安全隔离）
+            reliabilities.append(reliability_map.get(slot.lifecycle_state, 0.0))
         
         # 堆叠
         key_matrix = torch.stack(keys)  # [num_slots, dim]
@@ -253,12 +279,18 @@ class LocalCache:
         """清空缓存"""
         if namespace:
             to_remove = [lu_id for lu_id, slot in self._slots.items() if slot.namespace == namespace]
+            if not to_remove:
+                logger.debug(f"No slots to clear for namespace: {namespace}")
+                return
             for lu_id in to_remove:
                 self.remove(lu_id)
+            logger.info(f"Cleared {len(to_remove)} slots for namespace: {namespace}")
         else:
+            count = len(self._slots)
             self._slots.clear()
             self._slot_idx_map.clear()
             self._next_slot_idx = 0
+            logger.info(f"Cleared all {count} slots from cache")
     
     def _allocate_slot_idx(self) -> int:
         """分配槽位索引"""

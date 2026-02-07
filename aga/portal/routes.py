@@ -224,24 +224,35 @@ def create_portal_routers(service: PortalService):
             raise HTTPException(status_code=404, detail="Knowledge not found")
         return APIResponse(success=True, data=record)
     
+    # 分页限制常量
+    MAX_LIMIT = 500
+    DEFAULT_LIMIT = 50
+    
     @knowledge_router.get("/{namespace}")
     async def query_knowledge(
         namespace: str,
         lifecycle_states: Optional[str] = Query(None, description="状态过滤，逗号分隔"),
         trust_tiers: Optional[str] = Query(None, description="层级过滤，逗号分隔"),
-        limit: int = Query(100, ge=1, le=1000),
+        limit: int = Query(DEFAULT_LIMIT, ge=1, le=MAX_LIMIT, description=f"最大 {MAX_LIMIT}"),
         offset: int = Query(0, ge=0),
-        include_vectors: bool = Query(False),
+        include_vectors: bool = Query(False, description="是否包含向量（生产环境慎用）"),
     ):
         """查询知识列表"""
+        # 强制限制 limit 上限
+        actual_limit = min(limit, MAX_LIMIT)
+        
         states = lifecycle_states.split(",") if lifecycle_states else None
         tiers = trust_tiers.split(",") if trust_tiers else None
+        
+        # 生产环境警告
+        if include_vectors:
+            logger.warning(f"Query with include_vectors=True for namespace={namespace}")
         
         result = await service.query_knowledge(
             namespace=namespace,
             lifecycle_states=states,
             trust_tiers=tiers,
-            limit=limit,
+            limit=actual_limit,
             offset=offset,
             include_vectors=include_vectors,
         )
@@ -312,14 +323,14 @@ def create_portal_routers(service: PortalService):
     async def get_audit_log(
         namespace: Optional[str] = Query(None),
         lu_id: Optional[str] = Query(None),
-        limit: int = Query(100, ge=1, le=1000),
+        limit: int = Query(100, ge=1, le=500),
         offset: int = Query(0, ge=0),
     ):
         """获取审计日志"""
         result = await service.get_audit_log(
             namespace=namespace,
             lu_id=lu_id,
-            limit=limit,
+            limit=min(limit, 500),  # 强制限制
             offset=offset,
         )
         return APIResponse(success=True, data=result)

@@ -64,12 +64,28 @@ class AGAClient:
         except ImportError:
             raise ImportError("需要安装 httpx: pip install httpx")
         
+        from urllib.parse import urlparse
+        
+        # 验证 URL 格式
         self.base_url = base_url.rstrip("/")
+        parsed = urlparse(self.base_url)
+        if not parsed.scheme or not parsed.netloc:
+            raise ValueError(f"Invalid base_url format: {base_url}")
+        
+        # 生产环境安全警告
+        if parsed.scheme == "http" and parsed.netloc not in ("localhost", "127.0.0.1"):
+            logger.warning(
+                f"Using HTTP (not HTTPS) for non-localhost URL: {self.base_url}. "
+                "Consider using HTTPS in production to prevent MITM attacks."
+            )
+        
         self.timeout = timeout
         
         headers = {}
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
+        else:
+            logger.debug("No API key provided. Some endpoints may require authentication.")
         
         self._client = httpx.Client(
             base_url=self.base_url,
@@ -117,23 +133,35 @@ class AGAClient:
         
         Returns:
             注入结果
+        
+        Raises:
+            ValueError: 如果向量为空或格式无效
+            httpx.HTTPStatusError: 如果请求失败
         """
-        response = self._client.post(
-            "/knowledge/inject",
-            json={
-                "lu_id": lu_id,
-                "condition": condition,
-                "decision": decision,
-                "key_vector": key_vector,
-                "value_vector": value_vector,
-                "namespace": namespace,
-                "lifecycle_state": lifecycle_state,
-                "trust_tier": trust_tier,
-                "metadata": metadata,
-            },
-        )
-        response.raise_for_status()
-        return response.json()
+        # 验证向量
+        if not key_vector or not value_vector:
+            raise ValueError("key_vector and value_vector cannot be empty")
+        
+        try:
+            response = self._client.post(
+                "/knowledge/inject",
+                json={
+                    "lu_id": lu_id,
+                    "condition": condition,
+                    "decision": decision,
+                    "key_vector": key_vector,
+                    "value_vector": value_vector,
+                    "namespace": namespace,
+                    "lifecycle_state": lifecycle_state,
+                    "trust_tier": trust_tier,
+                    "metadata": metadata,
+                },
+            )
+            response.raise_for_status()
+            return response.json()
+        except Exception as e:
+            logger.error(f"inject_knowledge failed for {lu_id}: {e}")
+            raise
     
     def batch_inject(
         self,
@@ -201,7 +229,17 @@ class AGAClient:
         namespace: str = "default",
         reason: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """删除知识"""
+        """
+        删除知识
+        
+        Args:
+            lu_id: Learning Unit ID
+            namespace: 命名空间
+            reason: 删除原因（生产环境强烈建议提供）
+        """
+        if not reason:
+            logger.warning(f"Deleting knowledge {lu_id} without reason. Consider providing a reason for audit purposes.")
+        
         response = self._client.delete(
             f"/knowledge/{namespace}/{lu_id}",
             params={"reason": reason} if reason else {},
@@ -303,15 +341,25 @@ class AGAClient:
     
     def health(self) -> Dict[str, Any]:
         """健康检查"""
-        response = self._client.get("/health")
-        response.raise_for_status()
-        return response.json()
+        try:
+            response = self._client.get("/health")
+            response.raise_for_status()
+            return response.json()
+        except Exception as e:
+            logger.warning(f"Health check failed: {e}")
+            return {"status": "unreachable", "error": str(e)}
     
     def is_healthy(self) -> bool:
         """检查是否健康"""
         try:
             health = self.health()
-            return health.get("status") == "healthy"
+            status = health.get("status")
+            if status == "healthy":
+                return True
+            elif status == "degraded":
+                logger.warning("Portal is in degraded state")
+                return True  # 降级状态仍可用
+            return False
         except Exception:
             return False
     
@@ -371,7 +419,14 @@ class AsyncAGAClient:
         except ImportError:
             raise ImportError("需要安装 httpx: pip install httpx")
         
+        from urllib.parse import urlparse
+        
+        # 验证 URL 格式
         self.base_url = base_url.rstrip("/")
+        parsed = urlparse(self.base_url)
+        if not parsed.scheme or not parsed.netloc:
+            raise ValueError(f"Invalid base_url format: {base_url}")
+        
         self.timeout = timeout
         
         headers = {}
@@ -392,7 +447,10 @@ class AsyncAGAClient:
         return self
     
     async def __aexit__(self, *args):
-        await self.close()
+        try:
+            await self.close()
+        except Exception as e:
+            logger.warning(f"Error closing async client: {e}")
     
     # ==================== 知识管理 ====================
     
@@ -409,6 +467,10 @@ class AsyncAGAClient:
         metadata: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """注入知识"""
+        # 验证向量
+        if not key_vector or not value_vector:
+            raise ValueError("key_vector and value_vector cannot be empty")
+        
         response = await self._client.post(
             "/knowledge/inject",
             json={
@@ -573,6 +635,7 @@ class AsyncAGAClient:
         """检查是否健康"""
         try:
             health = await self.health()
-            return health.get("status") == "healthy"
+            status = health.get("status")
+            return status in ("healthy", "degraded")
         except Exception:
             return False

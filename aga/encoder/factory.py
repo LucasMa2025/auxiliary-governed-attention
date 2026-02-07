@@ -2,10 +2,19 @@
 编码器工厂
 
 提供统一的编码器创建接口。
+
+版本: v1.1
+
+v1.1 更新:
+- 增强错误处理和类型验证
+- 改进 create_best_available 的回退逻辑
+- 添加自定义编码器的接口验证
+- 优化 list_available 的信息安全性
 """
 
 from typing import Dict, List, Any, Optional, Type
 import logging
+import os
 
 from .base import BaseEncoder, EncoderType, EncoderConfig, EncoderSignature
 from .adapters import (
@@ -84,15 +93,27 @@ class EncoderFactory:
             
         Returns:
             编码器实例
+            
+        Raises:
+            ValueError: 未知的编码器类型
+            RuntimeError: 编码器初始化失败
         """
         encoder_class = cls.ENCODER_CLASSES.get(config.encoder_type)
         
         if encoder_class is None:
-            raise ValueError(f"Unknown encoder type: {config.encoder_type}")
+            available_types = [t.value for t in cls.ENCODER_CLASSES.keys()]
+            raise ValueError(
+                f"Unknown encoder type: {config.encoder_type}. "
+                f"Available types: {available_types}"
+            )
         
-        encoder = encoder_class(config)
-        logger.info(f"Created {config.encoder_type.value} encoder")
-        return encoder
+        try:
+            encoder = encoder_class(config)
+            logger.info(f"Created {config.encoder_type.value} encoder")
+            return encoder
+        except Exception as e:
+            logger.error(f"Failed to create {config.encoder_type.value} encoder: {e}")
+            raise RuntimeError(f"Encoder initialization failed: {e}") from e
     
     @classmethod
     def create_from_type(
@@ -198,6 +219,8 @@ class EncoderFactory:
         Returns:
             可用的最佳编码器实例
         """
+        tried_encoders = []
+        
         for encoder_type in cls.ENCODER_PRIORITY:
             try:
                 encoder = cls.create_from_type(
@@ -209,13 +232,25 @@ class EncoderFactory:
                 if encoder.is_available:
                     logger.info(f"Using {encoder_type.value} encoder")
                     return encoder
+                else:
+                    tried_encoders.append((encoder_type.value, "not available"))
             except Exception as e:
+                tried_encoders.append((encoder_type.value, str(e)))
                 logger.debug(f"Encoder {encoder_type.value} not available: {e}")
                 continue
         
         # 回退到哈希编码器（始终可用）
-        logger.warning("No semantic encoder available, falling back to hash encoder")
-        return cls.create_from_type(EncoderType.HASH, key_dim=key_dim, value_dim=value_dim)
+        logger.warning(
+            f"No semantic encoder available after trying {len(tried_encoders)} types, "
+            "falling back to hash encoder. This may affect knowledge retrieval quality."
+        )
+        
+        try:
+            return cls.create_from_type(EncoderType.HASH, key_dim=key_dim, value_dim=value_dim)
+        except Exception as e:
+            # 这不应该发生，但作为最后的保护
+            logger.error(f"Even hash encoder failed: {e}")
+            raise RuntimeError("No encoder available, including fallback hash encoder")
     
     @classmethod
     def register_custom(cls, name: str, encoder_class: Type[BaseEncoder]):
@@ -225,9 +260,25 @@ class EncoderFactory:
         Args:
             name: 编码器名称
             encoder_class: 编码器类
+            
+        Raises:
+            TypeError: encoder_class 不是 BaseEncoder 的子类
+            ValueError: 编码器类缺少必要的方法
         """
         if not issubclass(encoder_class, BaseEncoder):
             raise TypeError("encoder_class must be a subclass of BaseEncoder")
+        
+        # 验证必要的方法存在
+        required_methods = ['encode', 'encode_batch', 'get_signature']
+        missing_methods = []
+        for method in required_methods:
+            if not hasattr(encoder_class, method) or not callable(getattr(encoder_class, method)):
+                missing_methods.append(method)
+        
+        if missing_methods:
+            raise ValueError(
+                f"Custom encoder class is missing required methods: {missing_methods}"
+            )
         
         cls._custom_encoders[name] = encoder_class
         logger.info(f"Registered custom encoder: {name}")
@@ -238,7 +289,7 @@ class EncoderFactory:
         列出所有可用的编码器
         
         Returns:
-            编码器信息列表
+            编码器信息列表（不包含敏感信息如 API 密钥）
         """
         result = []
         
@@ -250,28 +301,41 @@ class EncoderFactory:
             if encoder_class is None:
                 continue
             
+            requires_api_key = encoder_type in [
+                EncoderType.OPENAI,
+                EncoderType.OPENAI_COMPATIBLE,
+            ]
+            requires_local_model = encoder_type in [
+                EncoderType.SENTENCE_TRANSFORMERS,
+                EncoderType.OLLAMA,
+                EncoderType.VLLM,
+                EncoderType.EMBEDDING_LAYER,
+            ]
+            
             try:
                 config = EncoderConfig(encoder_type=encoder_type)
                 encoder = encoder_class(config)
-                result.append({
+                
+                # 获取信息但过滤敏感数据
+                info = {
                     "type": encoder_type.value,
                     "native_dim": encoder.native_dim,
                     "is_available": encoder.is_available,
-                    "requires_api_key": encoder_type in [
-                        EncoderType.OPENAI,
-                        EncoderType.OPENAI_COMPATIBLE,
-                    ],
-                    "requires_local_model": encoder_type in [
-                        EncoderType.SENTENCE_TRANSFORMERS,
-                        EncoderType.OLLAMA,
-                        EncoderType.VLLM,
-                        EncoderType.EMBEDDING_LAYER,
-                    ],
-                })
+                    "requires_api_key": requires_api_key,
+                    "requires_local_model": requires_local_model,
+                }
+                
+                # 如果需要 API 密钥，检查环境变量是否已配置（不暴露实际值）
+                if requires_api_key:
+                    info["api_key_configured"] = bool(os.environ.get("OPENAI_API_KEY"))
+                
+                result.append(info)
             except Exception as e:
                 result.append({
                     "type": encoder_type.value,
                     "is_available": False,
+                    "requires_api_key": requires_api_key,
+                    "requires_local_model": requires_local_model,
                     "error": str(e),
                 })
         

@@ -86,8 +86,17 @@ from .safety import (
     CompositeSafetyClassifier,
     create_safety_classifier,
 )
+from .dynamic_slots import (
+    DynamicSlotPool,
+    DynamicSlotManager,
+    DynamicSlotConfig,
+    TieredSlotStorage,
+    ScalingPolicy,
+    SlotTier,
+    ScalingEvent,
+)
 
-__version__ = "1.2.0"
+__version__ = "1.3.0"
 
 __all__ = [
     # Config
@@ -129,5 +138,13 @@ __all__ = [
     "LLMSafetyClassifier",
     "CompositeSafetyClassifier",
     "create_safety_classifier",
+    # Dynamic Slots
+    "DynamicSlotPool",
+    "DynamicSlotManager",
+    "DynamicSlotConfig",
+    "TieredSlotStorage",
+    "ScalingPolicy",
+    "SlotTier",
+    "ScalingEvent",
 ]
 

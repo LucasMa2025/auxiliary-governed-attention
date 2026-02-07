@@ -64,6 +64,11 @@ class SyncSubscriber:
             send_ack: 是否发送 ACK
             **backend_kwargs: 后端配置
         """
+        # 验证 backend_type
+        valid_backends = {"memory", "redis", "kafka"}
+        if backend_type not in valid_backends:
+            raise ValueError(f"Unknown backend_type '{backend_type}'. Valid options: {valid_backends}")
+        
         self.channel = channel
         self.instance_id = instance_id
         self.send_ack = send_ack
@@ -79,6 +84,7 @@ class SyncSubscriber:
             "messages_processed": 0,
             "acks_sent": 0,
             "errors": 0,
+            "nacks_sent": 0,
             "by_type": {},
         }
     
@@ -128,15 +134,21 @@ class SyncSubscriber:
             
             if handlers:
                 for handler in handlers:
-                    if asyncio.iscoroutinefunction(handler):
-                        await handler(message)
-                    else:
-                        handler(message)
+                    try:
+                        if asyncio.iscoroutinefunction(handler):
+                            await handler(message)
+                        else:
+                            # 同步 handler 在异步环境中可能阻塞，使用 to_thread 包装
+                            await asyncio.get_event_loop().run_in_executor(None, handler, message)
+                    except Exception as handler_error:
+                        # 单个 handler 失败不影响其他 handler
+                        logger.error(f"Handler error for {type_name}: {handler_error}")
+                        self._stats["errors"] += 1
             elif self._default_handler:
                 if asyncio.iscoroutinefunction(self._default_handler):
                     await self._default_handler(message)
                 else:
-                    self._default_handler(message)
+                    await asyncio.get_event_loop().run_in_executor(None, self._default_handler, message)
             else:
                 logger.warning(f"No handler for message type: {type_name}")
             
@@ -153,6 +165,7 @@ class SyncSubscriber:
             # 发送 NACK
             if self.send_ack and message.require_ack:
                 await self._send_ack(message, success=False, error=str(e))
+                self._stats["nacks_sent"] += 1
     
     async def _send_ack(
         self,
@@ -228,7 +241,8 @@ class SyncSubscriber:
         return {
             **self._stats,
             "channel": self.channel,
-            "instance_id": self.instance_id,
+            # 安全过滤：不暴露完整 instance_id
+            "instance_id": self.instance_id[:8] + "..." if len(self.instance_id) > 12 else self.instance_id,
             "connected": self._backend.is_connected,
             "running": self._running,
         }

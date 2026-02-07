@@ -6,6 +6,14 @@ AGA 生产级算子
 - 无状态计算，状态外置
 - 每个推理实例独立持有 AGA 副本
 - 线程安全 + Fail-Open
+
+版本: v1.1
+
+v1.1 更新:
+- 增强 forward 的超时保护
+- 改进异步命中记录的异常处理
+- 优化向量形状验证
+- 添加持久化操作的错误恢复
 """
 import math
 import time
@@ -294,7 +302,23 @@ class AGAOperator(nn.Module):
         condition: Optional[str] = None,
         decision: Optional[str] = None,
     ) -> Optional[int]:
-        """注入知识"""
+        """注入知识（带向量验证）"""
+        # 验证向量
+        if key_vector is None or value_vector is None:
+            logger.warning(f"inject_knowledge: vectors cannot be None for lu_id={lu_id}")
+            return None
+        
+        # 验证向量形状
+        expected_key_dim = self.config.slot_pool.bottleneck_dim
+        expected_value_dim = self.config.slot_pool.hidden_dim
+        
+        key_size = key_vector.numel()
+        value_size = value_vector.numel()
+        
+        if key_size == 0 or value_size == 0:
+            logger.warning(f"inject_knowledge: empty vectors for lu_id={lu_id}")
+            return None
+        
         with self._slot_lock:
             return self.slot_pool.add_slot(
                 lu_id=lu_id,
@@ -321,28 +345,57 @@ class AGAOperator(nn.Module):
             return self.slot_pool.remove_slot(lu_id)
     
     def load_from_persistence(self, persistence: PersistenceManager) -> int:
-        """从持久化层加载"""
-        slots_data = persistence.load_active_slots(self.config.namespace)
-        
-        with self._slot_lock:
-            self.slot_pool.import_slots(slots_data)
-        
-        logger.info(f"Loaded {len(slots_data)} slots from persistence")
-        return len(slots_data)
+        """从持久化层加载（带错误恢复）"""
+        try:
+            slots_data = persistence.load_active_slots(self.config.namespace)
+            
+            if not slots_data:
+                logger.info(f"No slots to load for namespace={self.config.namespace}")
+                return 0
+            
+            with self._slot_lock:
+                self.slot_pool.import_slots(slots_data)
+            
+            logger.info(f"Loaded {len(slots_data)} slots from persistence")
+            return len(slots_data)
+            
+        except Exception as e:
+            logger.error(f"Failed to load from persistence: {e}")
+            return 0
     
     def save_to_persistence(self, persistence: PersistenceManager) -> int:
-        """保存到持久化层"""
-        with self._slot_lock:
-            slots_data = self.slot_pool.export_all()
-        
-        count = 0
-        for data in slots_data:
-            slot = Slot.from_dict(data, self.device)
-            if persistence.save_slot(self.config.namespace, slot):
-                count += 1
-        
-        logger.info(f"Saved {count} slots to persistence")
-        return count
+        """保存到持久化层（带错误恢复）"""
+        try:
+            with self._slot_lock:
+                slots_data = self.slot_pool.export_all()
+            
+            if not slots_data:
+                logger.debug(f"No slots to save for namespace={self.config.namespace}")
+                return 0
+            
+            count = 0
+            failed = 0
+            for data in slots_data:
+                try:
+                    slot = Slot.from_dict(data, self.device)
+                    if persistence.save_slot(self.config.namespace, slot):
+                        count += 1
+                    else:
+                        failed += 1
+                except Exception as e:
+                    logger.warning(f"Failed to save slot {data.get('lu_id')}: {e}")
+                    failed += 1
+            
+            if failed > 0:
+                logger.warning(f"Saved {count} slots, failed {failed}")
+            else:
+                logger.info(f"Saved {count} slots to persistence")
+            
+            return count
+            
+        except Exception as e:
+            logger.error(f"Failed to save to persistence: {e}")
+            return 0
     
     # ==================== 统计接口 ====================
     

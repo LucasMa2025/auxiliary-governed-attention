@@ -6,8 +6,15 @@ AGA 数据库连接池管理
 - 连接健康检查
 - 自动重连
 - 连接统计
+- 池溢出保护
 
-版本: v1.0
+版本: v1.1
+
+v1.1 更新:
+- 增强连接创建的重试机制
+- 改进健康检查的最小连接补充逻辑
+- 添加池溢出保护
+- 优化连接释放时的异常处理
 """
 import queue
 import sqlite3
@@ -207,25 +214,39 @@ class ConnectionPool:
                 logger.error(f"Failed to initialize connection pool: {e}")
                 return False
     
-    def _create_connection(self) -> Optional[PooledConnection]:
-        """创建新连接"""
-        try:
-            conn = sqlite3.connect(
-                self.db_path,
-                check_same_thread=False,
-                timeout=self.config.connection_timeout,
-            )
-            conn.row_factory = sqlite3.Row
-            
-            # 启用 WAL 模式提高并发性能
-            conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute("PRAGMA synchronous=NORMAL")
-            
-            return PooledConnection(conn, self)
-        except Exception as e:
-            logger.error(f"Failed to create connection: {e}")
-            self._stats.error_count += 1
-            return None
+    def _create_connection(self, max_attempts: int = 3) -> Optional[PooledConnection]:
+        """
+        创建新连接（带重试机制）
+        
+        Args:
+            max_attempts: 最大重试次数
+        """
+        last_error = None
+        
+        for attempt in range(max_attempts):
+            try:
+                conn = sqlite3.connect(
+                    self.db_path,
+                    check_same_thread=False,
+                    timeout=self.config.connection_timeout,
+                )
+                conn.row_factory = sqlite3.Row
+                
+                # 启用 WAL 模式提高并发性能
+                conn.execute("PRAGMA journal_mode=WAL")
+                conn.execute("PRAGMA synchronous=NORMAL")
+                
+                return PooledConnection(conn, self)
+            except sqlite3.Error as e:
+                last_error = e
+                self._stats.error_count += 1
+                if attempt < max_attempts - 1:
+                    delay = self.config.retry_delay * (2 ** attempt)
+                    logger.warning(f"Connection creation failed, retrying in {delay:.2f}s: {e}")
+                    time.sleep(delay)
+        
+        logger.error(f"Failed to create connection after {max_attempts} attempts: {last_error}")
+        return None
     
     @contextmanager
     def get_connection(self) -> Generator[sqlite3.Connection, None, None]:
@@ -318,15 +339,32 @@ class ConnectionPool:
     
     def _release(self, conn: PooledConnection):
         """归还连接"""
-        conn.mark_idle()
+        try:
+            conn.mark_idle()
+        except Exception as e:
+            logger.warning(f"Error marking connection idle: {e}")
         
         with self._lock:
             self._stats.active_connections -= 1
             self._stats.idle_connections += 1
         
-        # 检查是否应该关闭
-        if conn.is_expired(self.config) or self._closed:
-            conn.close()
+        # 检查连接是否损坏或过期
+        should_close = False
+        try:
+            if conn.is_expired(self.config) or self._closed:
+                should_close = True
+            elif not conn.is_healthy():
+                should_close = True
+                logger.warning("Closing unhealthy connection")
+        except Exception as e:
+            logger.warning(f"Error checking connection health: {e}")
+            should_close = True
+        
+        if should_close:
+            try:
+                conn.close()
+            except Exception as e:
+                logger.warning(f"Error closing connection: {e}")
             with self._lock:
                 if conn in self._all_connections:
                     self._all_connections.remove(conn)
@@ -338,8 +376,12 @@ class ConnectionPool:
         try:
             self._pool.put_nowait(conn)
         except queue.Full:
-            # 池已满，关闭连接
-            conn.close()
+            # 池已满，关闭连接（池溢出保护）
+            logger.debug("Pool full, closing excess connection")
+            try:
+                conn.close()
+            except Exception:
+                pass
             with self._lock:
                 if conn in self._all_connections:
                     self._all_connections.remove(conn)
@@ -367,17 +409,31 @@ class ConnectionPool:
             
             for conn in self._all_connections:
                 if not conn._in_use:
-                    if conn.is_expired(self.config) or not conn.is_healthy():
+                    try:
+                        if conn.is_expired(self.config) or not conn.is_healthy():
+                            to_remove.append(conn)
+                    except Exception as e:
+                        logger.warning(f"Error checking connection health: {e}")
                         to_remove.append(conn)
             
             # 移除不健康的连接
             for conn in to_remove:
-                conn.close()
-                self._all_connections.remove(conn)
-                self._stats.total_connections -= 1
-                self._stats.idle_connections -= 1
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+                if conn in self._all_connections:
+                    self._all_connections.remove(conn)
+                    self._stats.total_connections -= 1
+                    self._stats.idle_connections -= 1
+            
+            if to_remove:
+                logger.info(f"Removed {len(to_remove)} unhealthy connections")
             
             # 补充最小连接数
+            replenish_count = 0
+            replenish_failed = 0
+            
             while len(self._all_connections) < self.config.min_connections:
                 new_conn = self._create_connection()
                 if new_conn:
@@ -386,11 +442,18 @@ class ConnectionPool:
                         self._all_connections.append(new_conn)
                         self._stats.total_connections += 1
                         self._stats.idle_connections += 1
+                        replenish_count += 1
                     except queue.Full:
                         new_conn.close()
                         break
                 else:
-                    break
+                    replenish_failed += 1
+                    if replenish_failed >= 3:
+                        logger.warning(f"Failed to replenish min connections after {replenish_failed} attempts")
+                        break
+            
+            if replenish_count > 0:
+                logger.debug(f"Replenished {replenish_count} connections")
     
     def get_stats(self) -> Dict[str, Any]:
         """获取连接池统计"""

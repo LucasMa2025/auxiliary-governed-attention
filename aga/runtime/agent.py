@@ -121,6 +121,15 @@ class RuntimeAgent:
         # 创建订阅器
         sync_config = self.config.sync
         
+        # 验证 backend 配置
+        valid_backends = {"redis", "kafka", "memory"}
+        if sync_config.backend not in valid_backends:
+            logger.warning(
+                f"Unknown backend '{sync_config.backend}', falling back to 'memory'. "
+                f"Valid options: {valid_backends}"
+            )
+            sync_config.backend = "memory"
+        
         if sync_config.backend == "redis":
             self._subscriber = SyncSubscriber(
                 backend_type="redis",
@@ -186,11 +195,17 @@ class RuntimeAgent:
         self._running = False
         
         if self._subscriber:
-            await self._subscriber.stop()
-            await self._subscriber.disconnect()
+            try:
+                await self._subscriber.stop()
+                await self._subscriber.disconnect()
+            except Exception as e:
+                logger.warning(f"Error stopping subscriber: {e}")
         
-        # 注销
-        await self._deregister_from_portal()
+        # 注销（允许失败）
+        try:
+            await self._deregister_from_portal()
+        except Exception as e:
+            logger.warning(f"Error deregistering from portal: {e}")
         
         logger.info(f"RuntimeAgent stopped: {self.instance_id}")
     
@@ -379,6 +394,8 @@ class RuntimeAgent:
     
     async def _initial_sync(self):
         """从 Portal 初始同步"""
+        max_retries = 3
+        
         try:
             import httpx
             
@@ -386,27 +403,43 @@ class RuntimeAgent:
                 url = f"{self.config.sync.portal_url}/knowledge/{namespace}"
                 params = {"include_vectors": "true", "limit": 1000}
                 
-                async with httpx.AsyncClient() as client:
-                    response = await client.get(url, params=params, timeout=30)
-                    if response.status_code == 200:
-                        data = response.json()
-                        items = data.get("data", {}).get("items", [])
-                        
-                        for item in items:
-                            self._cache.add(
-                                lu_id=item["lu_id"],
-                                key_vector=item["key_vector"],
-                                value_vector=item["value_vector"],
-                                namespace=namespace,
-                                condition=item.get("condition"),
-                                decision=item.get("decision"),
-                                lifecycle_state=item.get("lifecycle_state", "probationary"),
-                                trust_tier=item.get("trust_tier"),
-                            )
-                        
-                        logger.info(f"Initial sync: loaded {len(items)} items for {namespace}")
-                    else:
-                        logger.warning(f"Initial sync failed for {namespace}: {response.status_code}")
+                # 带重试的请求
+                for attempt in range(max_retries):
+                    try:
+                        async with httpx.AsyncClient() as client:
+                            response = await client.get(url, params=params, timeout=30)
+                            if response.status_code == 200:
+                                data = response.json()
+                                items = data.get("data", {}).get("items", [])
+                                
+                                loaded_count = 0
+                                for item in items:
+                                    result = self._cache.add(
+                                        lu_id=item["lu_id"],
+                                        key_vector=item["key_vector"],
+                                        value_vector=item["value_vector"],
+                                        namespace=namespace,
+                                        condition=item.get("condition"),
+                                        decision=item.get("decision"),
+                                        lifecycle_state=item.get("lifecycle_state", "probationary"),
+                                        trust_tier=item.get("trust_tier"),
+                                    )
+                                    if result is not None:
+                                        loaded_count += 1
+                                
+                                logger.info(f"Initial sync: loaded {loaded_count}/{len(items)} items for {namespace}")
+                                break  # 成功，跳出重试循环
+                            else:
+                                logger.warning(f"Initial sync failed for {namespace}: {response.status_code}")
+                                break  # 非网络错误，不重试
+                                
+                    except httpx.RequestError as e:
+                        if attempt < max_retries - 1:
+                            wait_time = 2 ** attempt  # 指数退避
+                            logger.warning(f"Initial sync attempt {attempt + 1} failed for {namespace}, retrying in {wait_time}s: {e}")
+                            await asyncio.sleep(wait_time)
+                        else:
+                            logger.error(f"Initial sync failed for {namespace} after {max_retries} attempts: {e}")
                         
         except Exception as e:
             logger.warning(f"Initial sync failed: {e}")

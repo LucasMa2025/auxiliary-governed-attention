@@ -149,10 +149,30 @@ class VectorCompressor:
         
         Returns:
             压缩后的字节数据
+            
+        Raises:
+            SerializationError: 向量转换或压缩失败
         """
+        from .base import SerializationError
+        
         # 转换为 numpy 数组
-        key_arr = np.array(key_vector, dtype=np.float32)
-        value_arr = np.array(value_vector, dtype=np.float32)
+        try:
+            key_arr = np.array(key_vector, dtype=np.float32)
+            value_arr = np.array(value_vector, dtype=np.float32)
+        except (TypeError, ValueError) as e:
+            raise SerializationError(f"Failed to convert vectors to numpy array: {e}")
+        
+        # 验证向量有效性
+        if key_arr.size == 0:
+            raise SerializationError("key_vector is empty")
+        if value_arr.size == 0:
+            raise SerializationError("value_vector is empty")
+        
+        # 检查 NaN/Inf
+        if np.isnan(key_arr).any() or np.isinf(key_arr).any():
+            raise SerializationError("key_vector contains NaN or Inf values")
+        if np.isnan(value_arr).any() or np.isinf(value_arr).any():
+            raise SerializationError("value_vector contains NaN or Inf values")
         
         # 精度转换
         key_bytes = self._convert_precision(key_arr)
@@ -182,28 +202,46 @@ class VectorCompressor:
         
         Returns:
             (key_vector, value_vector) 元组
+            
+        Raises:
+            SerializationError: 数据格式无效或解压失败
         """
-        # 解析头部
-        header = self._parse_header(data)
+        from .base import SerializationError
         
-        # 解析元数据
-        metadata = self._parse_metadata(data)
+        if not data or len(data) < self.HEADER_SIZE + self.METADATA_SIZE:
+            raise SerializationError("Invalid compressed data: too short")
         
-        # 提取压缩数据
-        offset = self.HEADER_SIZE + self.METADATA_SIZE
-        key_data = data[offset:offset + metadata['key_compressed_size']]
-        offset += metadata['key_compressed_size']
-        value_data = data[offset:offset + metadata['value_compressed_size']]
-        
-        # 解压
-        key_bytes = self._decompress_bytes(key_data, header['compression'])
-        value_bytes = self._decompress_bytes(value_data, header['compression'])
-        
-        # 精度恢复
-        key_arr = self._restore_precision(key_bytes, metadata['key_dim'], header['precision'])
-        value_arr = self._restore_precision(value_bytes, metadata['value_dim'], header['precision'])
-        
-        return key_arr, value_arr
+        try:
+            # 解析头部
+            header = self._parse_header(data)
+            
+            # 验证版本兼容性
+            if header['version'] > self.VERSION:
+                raise SerializationError(
+                    f"Unsupported version: {header['version']} (max supported: {self.VERSION})"
+                )
+            
+            # 解析元数据
+            metadata = self._parse_metadata(data)
+            
+            # 提取压缩数据
+            offset = self.HEADER_SIZE + self.METADATA_SIZE
+            key_data = data[offset:offset + metadata['key_compressed_size']]
+            offset += metadata['key_compressed_size']
+            value_data = data[offset:offset + metadata['value_compressed_size']]
+            
+            # 解压
+            key_bytes = self._decompress_bytes(key_data, header['compression'])
+            value_bytes = self._decompress_bytes(value_data, header['compression'])
+            
+            # 精度恢复
+            key_arr = self._restore_precision(key_bytes, metadata['key_dim'], header['precision'])
+            value_arr = self._restore_precision(value_bytes, metadata['value_dim'], header['precision'])
+            
+            return key_arr, value_arr
+            
+        except (struct.error, ValueError) as e:
+            raise SerializationError(f"Failed to decompress vectors: {e}")
     
     def _convert_precision(self, arr: np.ndarray) -> bytes:
         """转换精度"""
@@ -335,23 +373,32 @@ class VectorCompressor:
         return fp32_bytes.view(np.float32)
     
     def _quantize_int8(self, arr: np.ndarray) -> bytes:
-        """INT8 量化"""
+        """INT8 量化（带溢出保护）"""
         if self.config.quantize_symmetric:
             # 对称量化
-            scale = np.abs(arr).max() / 127.0
-            if scale == 0:
-                scale = 1.0
-            quantized = np.round(arr / scale).astype(np.int8)
+            max_abs = np.abs(arr).max()
+            scale = max_abs / 127.0 if max_abs > 0 else 1.0
+            
+            # 防止溢出：确保 scale 不会太小
+            scale = max(scale, 1e-10)
+            
+            quantized = np.clip(np.round(arr / scale), -127, 127).astype(np.int8)
             # 存储 scale 和量化数据
             return struct.pack('f', scale) + quantized.tobytes()
         else:
             # 非对称量化
             min_val, max_val = arr.min(), arr.max()
-            scale = (max_val - min_val) / 255.0
-            if scale == 0:
-                scale = 1.0
-            zero_point = -min_val / scale
-            quantized = np.round(arr / scale + zero_point).astype(np.uint8)
+            range_val = max_val - min_val
+            scale = range_val / 255.0 if range_val > 0 else 1.0
+            
+            # 防止溢出
+            scale = max(scale, 1e-10)
+            
+            zero_point = -min_val / scale if scale > 0 else 0.0
+            # 确保 zero_point 在有效范围内
+            zero_point = np.clip(zero_point, 0, 255)
+            
+            quantized = np.clip(np.round(arr / scale + zero_point), 0, 255).astype(np.uint8)
             return struct.pack('ff', scale, zero_point) + quantized.tobytes()
     
     def _dequantize_int8(self, data: bytes, dim: int) -> np.ndarray:
