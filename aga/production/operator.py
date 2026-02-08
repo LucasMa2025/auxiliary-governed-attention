@@ -7,7 +7,10 @@ AGA 生产级算子
 - 每个推理实例独立持有 AGA 副本
 - 线程安全 + Fail-Open
 
-版本: v1.2
+版本: v1.3
+
+v1.3 更新:
+- 集成统一监控指标系统
 
 v1.2 更新 (大规模知识库支持):
 - 集成 ANN 索引层，支持 100K+ 到百万级知识库
@@ -26,6 +29,7 @@ import time
 import queue
 import logging
 import threading
+from dataclasses import dataclass
 from typing import Optional, Dict, Any, List, Tuple, TYPE_CHECKING
 
 import numpy as np
@@ -42,6 +46,22 @@ from .persistence import PersistenceManager
 if TYPE_CHECKING:
     from ..retrieval.ann_index import BaseANNIndex
     from ..retrieval.dynamic_loader import DynamicKnowledgeLoader
+
+# 监控模块导入
+try:
+    from ..monitoring import (
+        get_metrics_registry,
+        track_latency,
+        track_gate,
+        record_slot_metrics,
+    )
+    HAS_MONITORING = True
+except ImportError:
+    HAS_MONITORING = False
+    get_metrics_registry = None
+    track_latency = None
+    track_gate = None
+    record_slot_metrics = None
 
 logger = logging.getLogger(__name__)
 
@@ -672,7 +692,7 @@ class AGAOperator(nn.Module):
     # ==================== 统计接口 ====================
     
     def get_statistics(self) -> Dict[str, Any]:
-        """获取统计信息（含延迟分位数和 ANN 统计）"""
+        """获取统计信息（含延迟分位数和 ANN 统计）并更新监控指标"""
         with self._slot_lock:
             pool_stats = self.slot_pool.get_statistics()
         
@@ -711,18 +731,50 @@ class AGAOperator(nn.Module):
                 "enabled": True,
                 "search_count": self._ann_search_count,
                 "avg_search_time_ms": self._ann_total_time_ms / max(1, self._ann_search_count),
-                **self.ann_index.get_statistics(),
+                **self.ann_index.get_statistics(namespace=self.config.namespace),
             }
         else:
             stats["ann_index"] = {"enabled": False}
         
         # v1.2: 动态加载器统计
         if self.dynamic_loader is not None:
-            stats["dynamic_loader"] = self.dynamic_loader.get_statistics()
+            stats["dynamic_loader"] = self.dynamic_loader.get_statistics(
+                namespace=self.config.namespace
+            )
         else:
             stats["dynamic_loader"] = {"enabled": False}
         
+        # v1.3: 更新监控指标
+        if HAS_MONITORING:
+            self._update_monitoring_metrics(stats, pool_stats)
+        
         return stats
+    
+    def _update_monitoring_metrics(self, stats: Dict[str, Any], pool_stats: Dict[str, Any]):
+        """更新监控指标"""
+        try:
+            registry = get_metrics_registry()
+            if registry is None or not registry.enabled:
+                return
+            
+            namespace = self.config.namespace
+            
+            # 槽位指标
+            record_slot_metrics(
+                namespace=namespace,
+                total_slots=pool_stats.get("total_slots", 0),
+                active_slots=pool_stats.get("active_slots", 0),
+                slots_by_state=pool_stats.get("by_lifecycle_state", {}),
+            )
+            
+            # 槽位命中率
+            hit_rate = stats.get("aga_applied_ratio", 0.0)
+            registry.get_metric("slot_hit_rate").labels(
+                namespace=namespace
+            ).set(hit_rate)
+            
+        except Exception as e:
+            logger.debug(f"Failed to update monitoring metrics: {e}")
 
 
 class ConcurrentAGAManager:
