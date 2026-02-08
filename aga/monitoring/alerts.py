@@ -228,6 +228,100 @@ AGA_ALERT_RULES = [
         summary="AGA 隔离率过高",
         description="1 小时内隔离了超过 10 个知识槽位",
     ),
+    
+    # ==================== ANN 索引告警 (v3.5.0 新增) ====================
+    
+    AlertRule(
+        name="AGAANNSearchLatencyHigh",
+        expr='histogram_quantile(0.99, rate(aga_ann_search_duration_seconds_bucket[5m])) > 0.01',
+        duration="5m",
+        severity=AlertSeverity.WARNING,
+        summary="ANN 搜索 P99 延迟过高",
+        description="ANN 搜索 P99 延迟超过 10ms，当前值: {{ $value | printf \"%.3f\" }}s",
+    ),
+    
+    AlertRule(
+        name="AGAANNSearchLatencyCritical",
+        expr='histogram_quantile(0.99, rate(aga_ann_search_duration_seconds_bucket[5m])) > 0.05',
+        duration="2m",
+        severity=AlertSeverity.CRITICAL,
+        summary="ANN 搜索延迟严重过高",
+        description="ANN 搜索 P99 延迟超过 50ms，需要检查索引状态",
+    ),
+    
+    AlertRule(
+        name="AGAANNDeletedRatioHigh",
+        expr='aga_ann_deleted_ratio > 0.3',
+        duration="10m",
+        severity=AlertSeverity.WARNING,
+        summary="ANN 索引碎片化",
+        description="ANN 索引删除比例超过 30%，建议触发重建",
+    ),
+    
+    AlertRule(
+        name="AGAANNRebuildFailed",
+        expr='increase(aga_ann_rebuild_total{trigger="scheduled"}[1h]) == 0 and aga_ann_deleted_ratio > 0.3',
+        duration="30m",
+        severity=AlertSeverity.WARNING,
+        summary="ANN 索引重建未执行",
+        description="索引碎片化但重建未执行，请检查重建配置",
+    ),
+    
+    AlertRule(
+        name="AGAANNSearchErrorRateHigh",
+        expr='rate(aga_ann_search_total{status="error"}[5m]) / rate(aga_ann_search_total[5m]) > 0.01',
+        duration="5m",
+        severity=AlertSeverity.WARNING,
+        summary="ANN 搜索错误率过高",
+        description="ANN 搜索错误率超过 1%",
+    ),
+    
+    # ==================== 动态加载器告警 (v3.5.0 新增) ====================
+    
+    AlertRule(
+        name="AGALoaderColdLoadLatencyHigh",
+        expr='histogram_quantile(0.95, rate(aga_loader_duration_seconds_bucket{tier="total"}[5m])) > 0.005',
+        duration="5m",
+        severity=AlertSeverity.WARNING,
+        summary="动态加载器延迟过高",
+        description="动态加载器 P95 延迟超过 5ms",
+    ),
+    
+    AlertRule(
+        name="AGALoaderFailureRateHigh",
+        expr='rate(aga_loader_failures_total[5m]) / rate(aga_loader_requests_total[5m]) > 0.05',
+        duration="5m",
+        severity=AlertSeverity.WARNING,
+        summary="动态加载器失败率过高",
+        description="动态加载器失败率超过 5%",
+    ),
+    
+    AlertRule(
+        name="AGAWarmCacheHitRateLow",
+        expr='aga_warm_cache_hit_rate < 0.3',
+        duration="15m",
+        severity=AlertSeverity.INFO,
+        summary="Warm 缓存命中率过低",
+        description="Warm 缓存命中率低于 30%，可能需要调整缓存大小",
+    ),
+    
+    AlertRule(
+        name="AGAWarmCacheEvictionRateHigh",
+        expr='rate(aga_warm_cache_evictions_total[5m]) > 10',
+        duration="10m",
+        severity=AlertSeverity.WARNING,
+        summary="Warm 缓存淘汰率过高",
+        description="Warm 缓存淘汰率过高，建议增加缓存容量",
+    ),
+    
+    AlertRule(
+        name="AGAColdLoadRateHigh",
+        expr='rate(aga_loader_cold_loads_total[5m]) / rate(aga_loader_requests_total[5m]) > 0.5',
+        duration="10m",
+        severity=AlertSeverity.INFO,
+        summary="Cold 层加载比例过高",
+        description="超过 50% 的请求需要从 Cold 层加载，可能影响延迟",
+    ),
 ]
 
 
