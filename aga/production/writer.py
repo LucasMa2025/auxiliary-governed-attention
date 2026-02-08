@@ -359,14 +359,18 @@ class KnowledgeWriter:
             return self._results.get(request_id)
     
     def wait_for_result(self, request_id: str, timeout: float = 30.0) -> Optional[WriteResult]:
-        """等待写入结果"""
-        start_time = time.time()
+        """等待写入结果（带超时保护）"""
+        start_time = time.perf_counter()
         
-        while time.time() - start_time < timeout:
+        while time.perf_counter() - start_time < timeout:
             result = self.get_result(request_id)
             if result and result.status not in (WriteStatus.PENDING, WriteStatus.PROCESSING):
                 return result
             time.sleep(0.1)
+        
+        # 超时警告
+        elapsed = time.perf_counter() - start_time
+        logger.warning(f"wait_for_result timeout after {elapsed:.2f}s for request_id={request_id}")
         
         return self.get_result(request_id)
     

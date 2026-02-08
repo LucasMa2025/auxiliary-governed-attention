@@ -114,6 +114,8 @@ class Gate1(nn.Module):
     
     基于 hidden state 计算不确定性/置信度，
     低置信度时跳过 AGA 计算。
+    
+    支持自适应阈值：根据 bypass 率动态调整阈值。
     """
     
     def __init__(self, config: GateConfig, hidden_dim: int):
@@ -122,6 +124,18 @@ class Gate1(nn.Module):
         self.enabled = config.gate1_enabled
         self.threshold = config.gate1_threshold
         self.source = config.gate1_uncertainty_source
+        
+        # 自适应阈值配置
+        self._adaptive_threshold = getattr(config, 'gate1_adaptive_threshold', False)
+        self._threshold_ema = config.gate1_threshold  # 指数移动平均
+        self._threshold_alpha = 0.01  # 平滑系数
+        self._target_bypass_rate = 0.15  # 目标 bypass 率
+        self._threshold_min = 0.05
+        self._threshold_max = 0.3
+        
+        # 统计信息
+        self._bypass_count = 0
+        self._total_count = 0
         
         # 轻量投影头（用于计算置信度）
         if self.source in (UncertaintySource.HIDDEN_VARIANCE, UncertaintySource.LEARNED_PROJECTION):
@@ -159,10 +173,47 @@ class Gate1(nn.Module):
         # 这里的逻辑是：模型越不确定，越需要外部知识
         confidence = uncertainty.mean().item()
         
-        if confidence < self.threshold:
+        # 更新统计
+        self._total_count += 1
+        
+        # 自适应阈值调整
+        if self._adaptive_threshold:
+            current_bypass_rate = self._bypass_count / max(1, self._total_count)
+            
+            if current_bypass_rate < self._target_bypass_rate:
+                # bypass 率过低，提高阈值
+                self._threshold_ema = self._threshold_ema * (1 + self._threshold_alpha)
+            elif current_bypass_rate > self._target_bypass_rate:
+                # bypass 率过高，降低阈值
+                self._threshold_ema = self._threshold_ema * (1 - self._threshold_alpha)
+            
+            # 限制阈值范围
+            self._threshold_ema = max(self._threshold_min, min(self._threshold_max, self._threshold_ema))
+            effective_threshold = self._threshold_ema
+        else:
+            effective_threshold = self.threshold
+        
+        if confidence < effective_threshold:
+            self._bypass_count += 1
             return GateResult.BYPASS, confidence
         
         return GateResult.PASS, confidence
+    
+    def get_statistics(self) -> Dict[str, Any]:
+        """获取 Gate1 统计信息"""
+        return {
+            "static_threshold": self.threshold,
+            "effective_threshold": self._threshold_ema if self._adaptive_threshold else self.threshold,
+            "adaptive_enabled": self._adaptive_threshold,
+            "bypass_count": self._bypass_count,
+            "total_count": self._total_count,
+            "bypass_rate": self._bypass_count / max(1, self._total_count),
+        }
+    
+    def reset_statistics(self):
+        """重置统计信息"""
+        self._bypass_count = 0
+        self._total_count = 0
     
     def _compute_uncertainty(
         self,
@@ -176,22 +227,24 @@ class Gate1(nn.Module):
             # Logits 熵
             probs = F.softmax(logits, dim=-1)
             log_probs = F.log_softmax(logits, dim=-1)
-            entropy = -torch.sum(probs * log_probs, dim=-1)
-            # 归一化
-            return entropy / math.log(logits.size(-1))
+            entropy = -(probs * log_probs).sum(dim=-1)
+            # 归一化（防止除零）
+            norm = max(1.0, math.log(logits.size(-1)))
+            return (entropy / norm).clamp(0.0, 1.0)
         
         elif self.source == UncertaintySource.CONSTANT:
-            return torch.ones(batch_size, seq_len, device=hidden_states.device) * 0.5
+            return torch.full(
+                (batch_size, seq_len), 0.5, device=hidden_states.device, dtype=hidden_states.dtype
+            )
         
         else:
-            # Hidden Variance (默认)
-            # 计算每个 token 的内部方差
-            mean = hidden_states.mean(dim=-1, keepdim=True)
-            variance = ((hidden_states - mean) ** 2).mean(dim=-1)
+            # Hidden Variance (默认) - 使用 var() API 更高效
+            variance = hidden_states.var(dim=-1, unbiased=False)
             
-            # 归一化
+            # 归一化（显式防护除零）
             log_var = torch.log1p(variance)
-            normalized = log_var / (log_var.mean() + 1e-6)
+            denom = log_var.mean().clamp_min(1e-6)
+            normalized = log_var / denom
             
             # 如果有学习的投影，结合使用
             if hasattr(self, 'confidence_proj'):
@@ -200,7 +253,7 @@ class Gate1(nn.Module):
             else:
                 combined = normalized
             
-            return torch.clamp(combined, 0, 1)
+            return combined.clamp_(0.0, 1.0)  # 原地裁剪减少内存分配
 
 
 class Gate2(nn.Module):
@@ -230,7 +283,7 @@ class Gate2(nn.Module):
         reliability_mask: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        Top-k 路由选择
+        Top-k 路由选择（分块计算避免 OOM）
         
         Args:
             query: [batch, seq, bottleneck_dim]
@@ -241,20 +294,46 @@ class Gate2(nn.Module):
             top_indices: [batch, seq, k]
             router_scores: [batch, seq, k]
         """
+        batch_size, seq_len, _ = query.shape
+        num_slots = slot_keys.size(0)
+        
+        # 边界检查：有效 k 值
+        k = min(self.top_k, max(1, num_slots))
+        
         # 投影到路由空间
         router_query = self.router_proj(query)  # [batch, seq, router_dim]
         router_keys = self.router_proj(slot_keys)  # [num_slots, router_dim]
         
-        # 路由分数
-        router_scores = torch.matmul(router_query, router_keys.T)
-        router_scores = router_scores / math.sqrt(self.router_dim)
+        # 预计算缩放因子
+        scale = 1.0 / math.sqrt(self.router_dim)
         
-        # 应用可靠性掩码
-        if reliability_mask is not None:
-            router_scores = router_scores + reliability_mask.unsqueeze(0).unsqueeze(0)
+        # Flatten query 用于分块处理
+        flat_query = router_query.reshape(-1, self.router_dim)  # [batch*seq, router_dim]
+        total_queries = flat_query.size(0)
         
-        # 选择 top-k
-        top_scores, top_indices = torch.topk(router_scores, self.top_k, dim=-1)
+        # 分块计算避免 OOM
+        top_scores_chunks = []
+        top_indices_chunks = []
+        
+        for start in range(0, total_queries, self.chunk_size):
+            end = min(start + self.chunk_size, total_queries)
+            q_chunk = flat_query[start:end]  # [chunk, router_dim]
+            
+            # 计算路由分数
+            scores = (q_chunk @ router_keys.T) * scale  # [chunk, num_slots]
+            
+            # 应用可靠性掩码
+            if reliability_mask is not None:
+                scores = scores + reliability_mask.unsqueeze(0)
+            
+            # 选择 top-k
+            chunk_scores, chunk_indices = torch.topk(scores, k=k, dim=-1)
+            top_scores_chunks.append(chunk_scores)
+            top_indices_chunks.append(chunk_indices)
+        
+        # 拼接结果并重塑
+        top_scores = torch.cat(top_scores_chunks, dim=0).view(batch_size, seq_len, k)
+        top_indices = torch.cat(top_indices_chunks, dim=0).view(batch_size, seq_len, k)
         
         return top_indices, top_scores
 

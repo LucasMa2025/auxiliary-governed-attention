@@ -187,6 +187,12 @@ class SlotPool:
         self._total_hits = 0
         self._total_misses = 0
         self._eviction_count = 0
+        
+        # 容量告警
+        self._capacity_warning_threshold = 0.9   # 90%
+        self._capacity_critical_threshold = 0.95  # 95%
+        self._last_warning_time = 0.0
+        self._warning_cooldown = 60.0  # 告警冷却时间（秒）
     
     @property
     def active_count(self) -> int:
@@ -215,6 +221,9 @@ class SlotPool:
             slot_idx 或 None（如果没有空闲槽位）
         """
         with self._lock:
+            # 容量告警检查
+            self._check_capacity_warning()
+            
             # 检查是否已存在
             if lu_id in self._lu_id_to_slot:
                 return self._update_slot(lu_id, key_vector, value_vector, lifecycle_state)
@@ -313,6 +322,84 @@ class SlotPool:
                 vector = vector / (norm + 1e-8) * target_norm
         
         return vector
+    
+    def _check_capacity_warning(self):
+        """检查容量并发出告警"""
+        current_occupancy = self.occupancy_ratio
+        current_time = time.time()
+        
+        if current_occupancy >= self._capacity_critical_threshold:
+            if current_time - self._last_warning_time > self._warning_cooldown:
+                logger.error(
+                    f"CRITICAL: SlotPool {self.namespace} at {current_occupancy:.1%} capacity! "
+                    f"({len(self._slots)}/{self.max_slots}). "
+                    f"Consider enabling eviction or increasing max_slots."
+                )
+                self._last_warning_time = current_time
+        elif current_occupancy >= self._capacity_warning_threshold:
+            if current_time - self._last_warning_time > self._warning_cooldown:
+                logger.warning(
+                    f"WARNING: SlotPool {self.namespace} at {current_occupancy:.1%} capacity. "
+                    f"({len(self._slots)}/{self.max_slots})"
+                )
+                self._last_warning_time = current_time
+    
+    def _normalize_vectors_batch(
+        self,
+        vectors: torch.Tensor,
+        target_dim: int,
+        is_key: bool,
+    ) -> torch.Tensor:
+        """批量归一化向量（更高效）"""
+        # vectors: [N, dim]
+        if vectors.size(0) == 0:
+            return vectors
+        
+        # 维度调整
+        if vectors.size(1) != target_dim:
+            if vectors.size(1) < target_dim:
+                vectors = F.pad(vectors, (0, target_dim - vectors.size(1)))
+            else:
+                vectors = vectors[:, :target_dim]
+        
+        # NaN/Inf 保护
+        vectors = torch.nan_to_num(vectors, nan=0.0, posinf=0.0, neginf=0.0)
+        
+        # 批量范数裁剪（向量化操作）
+        if self.config.enable_norm_clipping:
+            norms = vectors.norm(dim=1, keepdim=True)
+            target_norm = self.config.key_norm_target if is_key else self.config.value_norm_target
+            
+            # 只裁剪超过目标范数的向量
+            scale = torch.where(
+                norms > target_norm,
+                target_norm / (norms + 1e-8),
+                torch.ones_like(norms)
+            )
+            vectors = vectors * scale
+        
+        return vectors
+    
+    def get_health_status(self) -> Dict[str, Any]:
+        """提供健康状态检查"""
+        with self._lock:
+            occupancy = self.occupancy_ratio
+            
+            if occupancy >= self._capacity_critical_threshold:
+                status = "critical"
+            elif occupancy >= self._capacity_warning_threshold:
+                status = "warning"
+            else:
+                status = "healthy"
+            
+            return {
+                "status": status,
+                "occupancy_ratio": occupancy,
+                "active_slots": len(self._slots),
+                "max_slots": self.max_slots,
+                "free_slots": len(self._free_indices),
+                "eviction_enabled": self.config.eviction_enabled,
+            }
     
     def remove_slot(self, lu_id: str) -> bool:
         """移除槽位"""
@@ -518,11 +605,13 @@ class SlotPool:
             return [slot.to_dict() for slot in self._slots.values()]
     
     def import_slots(self, slots_data: List[Dict[str, Any]]):
-        """导入槽位（带数据完整性验证）"""
+        """导入槽位（带数据完整性验证，使用批量归一化加速）"""
         with self._lock:
             imported_count = 0
             skipped_count = 0
             
+            # 收集有效数据用于批量处理
+            valid_data = []
             for data in slots_data:
                 try:
                     # 验证必要字段
@@ -545,28 +634,78 @@ class SlotPool:
                         skipped_count += 1
                         continue
                     
-                    slot = Slot.from_dict(data, self.device)
-                    
-                    if slot.slot_idx >= self.max_slots:
-                        logger.warning(f"Skipping slot {slot.lu_id} with invalid index {slot.slot_idx}")
+                    if data['slot_idx'] >= self.max_slots:
+                        logger.warning(f"Skipping slot {data.get('lu_id')} with invalid index {data['slot_idx']}")
                         skipped_count += 1
                         continue
                     
-                    self._slots[slot.slot_idx] = slot
-                    self._lu_id_to_slot[slot.lu_id] = slot.slot_idx
-                    if slot.slot_idx in self._free_indices:
-                        self._free_indices.remove(slot.slot_idx)
-                    
-                    imported_count += 1
+                    valid_data.append(data)
                     
                 except Exception as e:
-                    logger.warning(f"Failed to import slot: {e}")
+                    logger.warning(f"Failed to validate slot: {e}")
                     skipped_count += 1
+            
+            # 批量处理向量
+            if valid_data:
+                try:
+                    key_vectors = torch.stack([
+                        torch.tensor(d['key_vector'], dtype=torch.float32) for d in valid_data
+                    ]).to(self.device)
+                    value_vectors = torch.stack([
+                        torch.tensor(d['value_vector'], dtype=torch.float32) for d in valid_data
+                    ]).to(self.device)
+                    
+                    # 批量归一化
+                    keys_normalized = self._normalize_vectors_batch(key_vectors, self.bottleneck_dim, is_key=True)
+                    values_normalized = self._normalize_vectors_batch(value_vectors, self.hidden_dim, is_key=False)
+                    
+                    # 创建槽位
+                    for i, data in enumerate(valid_data):
+                        slot = Slot(
+                            slot_idx=data['slot_idx'],
+                            lu_id=data['lu_id'],
+                            key_vector=keys_normalized[i],
+                            value_vector=values_normalized[i],
+                            lifecycle_state=LifecycleState(data.get('lifecycle_state', 'probationary')),
+                            condition=data.get('condition'),
+                            decision=data.get('decision'),
+                            namespace=data.get('namespace', self.namespace),
+                            hit_count=data.get('hit_count', 0),
+                            consecutive_misses=data.get('consecutive_misses', 0),
+                            last_hit_ts=data.get('last_hit_ts', time.time()),
+                            created_at=data.get('created_at', time.time()),
+                            updated_at=data.get('updated_at', time.time()),
+                            version=data.get('version', 1),
+                        )
+                        
+                        self._slots[slot.slot_idx] = slot
+                        self._lu_id_to_slot[slot.lu_id] = slot.slot_idx
+                        if slot.slot_idx in self._free_indices:
+                            self._free_indices.remove(slot.slot_idx)
+                        
+                        imported_count += 1
+                        
+                except Exception as e:
+                    logger.error(f"Batch import failed, falling back to individual import: {e}")
+                    # 回退到逐个导入
+                    for data in valid_data:
+                        try:
+                            slot = Slot.from_dict(data, self.device)
+                            self._slots[slot.slot_idx] = slot
+                            self._lu_id_to_slot[slot.lu_id] = slot.slot_idx
+                            if slot.slot_idx in self._free_indices:
+                                self._free_indices.remove(slot.slot_idx)
+                            imported_count += 1
+                        except Exception as e2:
+                            logger.warning(f"Failed to import slot {data.get('lu_id')}: {e2}")
+                            skipped_count += 1
             
             self._cache_dirty = True
             
             if skipped_count > 0:
                 logger.info(f"Imported {imported_count} slots, skipped {skipped_count}")
+            else:
+                logger.debug(f"Imported {imported_count} slots")
 
 
 class SlotSubspacePool:

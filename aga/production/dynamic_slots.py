@@ -7,7 +7,35 @@ AGA 动态槽位扩展模块
 - 分层存储：热/温/冷槽位分层管理
 - 内存预算：基于内存预算的容量控制
 
-版本: v1.0
+版本: v1.1
+
+与大规模知识库架构的关系 (v1.1 说明):
+=====================================
+
+本模块与 aga/retrieval/ 模块是**互补关系**，而非替代关系：
+
+1. **本模块 (dynamic_slots.py)**:
+   - 作用范围：Hot Pool (≤256 slots)
+   - 功能：动态调整 Hot Pool 容量 (16~256)
+   - 目的：优化 Hot Pool 利用率，减少内存浪费
+   - 不变量：max_capacity ≤ 256，保证 Gate2 O(1)
+
+2. **retrieval 模块 (ann_index.py + dynamic_loader.py)**:
+   - 作用范围：全量知识库 (100K~1M+ slots)
+   - 功能：ANN 索引 + 冷知识动态加载
+   - 目的：突破 256 槽位限制，支持大规模知识库
+   - 不变量：ANN O(log N)，Hot Pool 仍保持 ≤256
+
+3. **协作方式**:
+   - ANN 索引从全量知识库检索 Top-200 候选
+   - DynamicKnowledgeLoader 将候选加载到 TieredSlotStorage
+   - TieredSlotStorage 管理 Hot/Warm/Cold 分层
+   - DynamicSlotPool 动态调整 Hot Pool 容量
+
+4. **结论**:
+   - 本模块仍然有意义，负责 Hot Pool 的动态扩缩容
+   - 与 ANN 索引层是互补关系，不冲突
+   - 建议在大规模场景下同时启用两者
 """
 import time
 import threading
@@ -144,6 +172,12 @@ class TieredSlotStorage:
             "promotions": 0,
             "demotions": 0,
         }
+        
+        # 预测性提升配置
+        self._enable_predictive_promotion = True
+        self._high_freq_threshold = 10  # 高频访问阈值
+        self._recent_window_seconds = 60.0  # 最近访问窗口
+        self._recent_access_threshold = 3  # 窗口内访问次数阈值
     
     def get(self, lu_id: str) -> Optional[Slot]:
         """获取槽位（自动提升层级）"""
@@ -163,8 +197,9 @@ class TieredSlotStorage:
             if lu_id in self._warm_slots:
                 self._stats["warm_hits"] += 1
                 slot = self._warm_slots[lu_id]
-                # 提升到热层
-                self._promote_to_hot(lu_id, slot)
+                # 预测性提升判断
+                if self._should_promote_to_hot(lu_id):
+                    self._promote_to_hot(lu_id, slot)
                 return slot
             
             # 检查冷层
@@ -224,6 +259,26 @@ class TieredSlotStorage:
             "hit_count": slot.hit_count,
             "created_at": slot.created_at,
         }
+    
+    def _should_promote_to_hot(self, lu_id: str) -> bool:
+        """预测性提升策略：判断是否应提升到热层"""
+        if not self._enable_predictive_promotion:
+            return True  # 禁用预测时，总是提升
+        
+        access_count = self._access_counts.get(lu_id, 0)
+        last_access = self._last_access.get(lu_id, 0)
+        current_time = time.time()
+        
+        # 规则1: 高频访问 (> threshold 次)
+        if access_count > self._high_freq_threshold:
+            return True
+        
+        # 规则2: 最近频繁访问 (窗口内 > threshold 次)
+        if (current_time - last_access < self._recent_window_seconds 
+            and access_count > self._recent_access_threshold):
+            return True
+        
+        return False
     
     def _promote_to_hot(self, lu_id: str, slot: Slot):
         """提升到热层"""

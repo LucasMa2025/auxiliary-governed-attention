@@ -331,7 +331,7 @@ class RedisPersistence(BasePersistence):
     
     def save_slot(self, namespace: str, slot: Slot) -> bool:
         """保存槽位到 Redis"""
-        start_time = time.time()
+        start_time = time.perf_counter()
         try:
             key = self._slot_key(namespace)
             data = json.dumps(slot.to_dict())
@@ -350,13 +350,13 @@ class RedisPersistence(BasePersistence):
             self._publish_change(namespace, "save", slot.lu_id)
             
             # 记录指标
-            duration = time.time() - start_time
+            duration = time.perf_counter() - start_time
             metrics.record_operation(namespace, "save", "success", duration)
             
             return True
         except Exception as e:
             logger.error(f"Failed to save slot to Redis: {e}")
-            duration = time.time() - start_time
+            duration = time.perf_counter() - start_time
             metrics.record_operation(namespace, "save", "error", duration)
             return False
     
@@ -1022,11 +1022,21 @@ class PersistenceManager:
     持久化管理器
     
     提供统一的持久化接口，管理后台同步。
+    
+    特性：
+    - 带重试的保存操作（指数退避）
+    - 带降级的加载操作（Redis → PostgreSQL）
+    - Redis 缓存回填
     """
     
     def __init__(self, config: PersistenceConfig):
         self.config = config
         self.persistence = HybridPersistence(config)
+        
+        # 重试配置
+        self._max_retries = 3
+        self._retry_delay = 0.5  # 秒
+        self._retry_backoff = 2.0  # 指数退避
         
         # 后台同步
         self._sync_thread: Optional[threading.Thread] = None
@@ -1273,12 +1283,83 @@ class PersistenceManager:
             logger.warning(f"Failed to sync hit counts: {e}")
     
     def save_slot(self, namespace: str, slot: Slot) -> bool:
-        """保存槽位"""
-        return self.persistence.save_slot(namespace, slot)
+        """保存槽位（带重试机制）"""
+        for attempt in range(self._max_retries):
+            try:
+                return self.persistence.save_slot(namespace, slot)
+            except Exception as e:
+                if attempt < self._max_retries - 1:
+                    delay = self._retry_delay * (self._retry_backoff ** attempt)
+                    logger.warning(
+                        f"Save slot failed (attempt {attempt + 1}/{self._max_retries}): {e}. "
+                        f"Retrying in {delay:.2f}s..."
+                    )
+                    time.sleep(delay)
+                else:
+                    logger.error(f"Save slot failed after {self._max_retries} attempts: {e}")
+                    return False
+        return False
     
     def load_active_slots(self, namespace: str) -> List[Dict[str, Any]]:
-        """加载活跃槽位"""
-        return self.persistence.load_active_slots(namespace)
+        """加载活跃槽位（带降级保护）"""
+        # 优先从 Redis 加载
+        if self.persistence.redis:
+            try:
+                redis_slots = self.persistence.redis.load_active_slots(namespace)
+                if redis_slots:
+                    logger.debug(f"Loaded {len(redis_slots)} slots from Redis")
+                    return redis_slots
+            except Exception as e:
+                logger.warning(f"Failed to load from Redis: {e}, falling back to PostgreSQL")
+        
+        # 降级到 PostgreSQL
+        if self.persistence.postgres:
+            try:
+                pg_slots = self.persistence.postgres.load_active_slots(namespace)
+                logger.info(f"Loaded {len(pg_slots)} slots from PostgreSQL (fallback)")
+                
+                # 回填 Redis 缓存
+                if self.persistence.redis and pg_slots:
+                    self._backfill_redis(namespace, pg_slots)
+                
+                return pg_slots
+            except Exception as e:
+                logger.error(f"Failed to load from PostgreSQL: {e}")
+        
+        return []
+    
+    def _backfill_redis(self, namespace: str, slots_data: List[Dict[str, Any]]):
+        """回填 Redis 缓存"""
+        try:
+            import torch
+            backfilled = 0
+            for slot_data in slots_data:
+                try:
+                    slot = Slot(
+                        slot_idx=slot_data.get("slot_idx", 0),
+                        lu_id=slot_data["lu_id"],
+                        key_vector=torch.tensor(slot_data["key_vector"]),
+                        value_vector=torch.tensor(slot_data["value_vector"]),
+                        lifecycle_state=LifecycleState(slot_data["lifecycle_state"]),
+                        namespace=namespace,
+                        condition=slot_data.get("condition"),
+                        decision=slot_data.get("decision"),
+                        hit_count=slot_data.get("hit_count", 0),
+                        consecutive_misses=slot_data.get("consecutive_misses", 0),
+                        last_hit_ts=slot_data.get("last_hit_ts", time.time()),
+                        created_at=slot_data.get("created_at", time.time()),
+                        updated_at=slot_data.get("updated_at", time.time()),
+                        version=slot_data.get("version", 1),
+                    )
+                    self.persistence.redis.save_slot(namespace, slot)
+                    backfilled += 1
+                except Exception as e:
+                    logger.warning(f"Failed to backfill slot {slot_data.get('lu_id')}: {e}")
+            
+            if backfilled > 0:
+                logger.info(f"Backfilled {backfilled} slots to Redis")
+        except Exception as e:
+            logger.warning(f"Failed to backfill Redis: {e}")
     
     def update_lifecycle(self, namespace: str, lu_id: str, new_state: str) -> bool:
         """更新生命周期"""
