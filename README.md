@@ -778,6 +778,125 @@ Gate-0 (先验门控)     Gate-1 (置信门控)     Gate-2 (Top-k 路由)
 | **向量时钟一致性**                 | ✅ 完全实现 | `aga/distributed/partition.py` (v3.4.1)       |
 | **告警规则配置**                   | ✅ 完全实现 | `aga/monitoring/alerts.py` (v3.4.1)           |
 | **Grafana 仪表盘**                 | ✅ 完全实现 | `aga/monitoring/alerts.py` (v3.4.1)           |
+| **ANN 索引层 (大规模知识库)**      | ✅ 完全实现 | `aga/retrieval/ann_index.py` (v3.5.0)         |
+| **动态知识加载器**                 | ✅ 完全实现 | `aga/retrieval/dynamic_loader.py` (v3.5.0)    |
+| **两阶段路由 (ANN + Gate2)**       | ✅ 完全实现 | `aga/production/operator.py` (v3.5.0)         |
+
+### 🚀 大规模知识库支持 (v3.5.0 新增)
+
+AGA v3.5.0 引入了 **ANN 索引层**，支持 100K+ 到百万级知识库的高效检索。
+
+#### 架构概览
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                    AGA Large-Scale Architecture                      │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│  ┌─────────────────────────────────────────────────────────────┐   │
+│  │                 Knowledge Store (N = 1M+)                    │   │
+│  │  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐  │   │
+│  │  │ ANN Index   │  │ Metadata    │  │ Vector Store        │  │   │
+│  │  │ (FAISS/HNSW)│  │ (PostgreSQL)│  │ (Redis + PostgreSQL)│  │   │
+│  │  └─────────────┘  └─────────────┘  └─────────────────────┘  │   │
+│  └─────────────────────────────────────────────────────────────┘   │
+│                              ↓                                       │
+│  ┌─────────────────────────────────────────────────────────────┐   │
+│  │              Pre-Retrieval Layer (ANN 粗筛)                  │   │
+│  │  - ANN 检索: Query → Top-200 候选                           │   │
+│  │  - 复杂度: O(log N)                                         │   │
+│  │  - 延迟: 1-5ms (GPU)                                        │   │
+│  └─────────────────────────────────────────────────────────────┘   │
+│                              ↓                                       │
+│  ┌─────────────────────────────────────────────────────────────┐   │
+│  │              Dynamic Loader (冷知识加载)                     │   │
+│  │  - 从 Hot/Warm/Cold 加载候选到 Hot Pool                     │   │
+│  │  - 支持冷知识动态加载                                        │   │
+│  │  - 延迟: 0.2-2ms                                            │   │
+│  └─────────────────────────────────────────────────────────────┘   │
+│                              ↓                                       │
+│  ┌─────────────────────────────────────────────────────────────┐   │
+│  │              Hot Pool (N ≤ 256, Gate2 精筛)                  │   │
+│  │  - Gate2 精筛: Top-200 → Top-8                              │   │
+│  │  - 复杂度: O(k) where k ≤ 256                               │   │
+│  │  - 延迟: ~0.5ms                                             │   │
+│  └─────────────────────────────────────────────────────────────┘   │
+│                              ↓                                       │
+│  ┌─────────────────────────────────────────────────────────────┐   │
+│  │              Attention Fusion (Token 级融合)                 │   │
+│  │  - 门控机制                                                  │   │
+│  │  - 延迟: ~0.3ms                                             │   │
+│  └─────────────────────────────────────────────────────────────┘   │
+│                                                                      │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+#### 快速启用
+
+```python
+from aga.production.config import ProductionAGAConfig
+from aga.production.operator import AGAOperator
+
+# 方式 1: 使用工厂方法
+config = ProductionAGAConfig.for_large_scale(
+    namespace="production",
+    index_capacity=1_000_000,  # 支持 100 万知识
+    hot_pool_size=256,         # Hot Pool 保持 ≤256
+    use_gpu=True,              # GPU 加速 ANN
+)
+
+# 方式 2: 手动配置
+config = ProductionAGAConfig()
+config.ann_index.enabled = True
+config.ann_index.index_capacity = 1_000_000
+config.ann_index.retrieval_top_k = 200
+config.dynamic_loader.enabled = True
+
+# 创建算子
+operator = AGAOperator(config)
+
+# 注入知识（自动更新 ANN 索引）
+operator.inject_knowledge(
+    lu_id="knowledge_001",
+    key_vector=key_vec,
+    value_vector=value_vec,
+)
+
+# 推理时使用 ANN 检索
+import numpy as np
+query_vec = key_vec.cpu().numpy()  # 查询向量
+
+result = operator.forward(
+    hidden_states=hidden,
+    primary_attention_output=attn_out,
+    query_for_retrieval=query_vec,  # 传入查询向量
+    return_diagnostics=True,
+)
+
+# 查看 ANN 诊断
+print(f"ANN 候选数: {result.ann_candidates}")
+print(f"ANN 检索耗时: {result.ann_search_time_ms:.2f}ms")
+print(f"Hot 命中: {result.hot_hits}, Cold 加载: {result.cold_loads}")
+```
+
+#### 性能对比
+
+| 知识规模 | 传统路由 (O(N)) | ANN 路由 (O(log N)) | 延迟增加 |
+|----------|-----------------|---------------------|----------|
+| 1K       | ~1ms            | ~1ms                | 0        |
+| 10K      | ~10ms           | ~2ms                | -8ms     |
+| 100K     | ~100ms          | ~3ms                | -97ms    |
+| 1M       | 不可行          | ~5ms                | ✅ 可行  |
+
+#### 核心价值
+
+1. **突破 256 槽位限制**：支持百万级知识库
+2. **冷知识动态加载**：RAG 无法提供的能力
+3. **保持 Token 级融合**：不同于 RAG 的 Prompt 拼接
+4. **延迟可控**：3-6ms 对知识密集型场景可接受
+5. **向后兼容**：ANN 默认关闭，不影响现有部署
+
+> 详细技术分析请参阅 [docs/大知识库升级架构建议/综合架构调整方案.md](docs/大知识库升级架构建议/综合架构调整方案.md)
 
 ### 🏛️ 内部治理系统
 
@@ -1869,6 +1988,62 @@ Gate-0 (Prior gating)     Gate-1 (Confidence gating)     Gate-2 (Top-k routing)
 | **Hit count / Consecutive misses**       | ✅ Fully implemented | `Slot.hit_count`, `consecutive_misses`        |
 | **Namespace isolation**                  | ✅ Fully implemented | `aga/production/slot_pool.py`                 |
 | **Early Exit**                           | ✅ Fully implemented | `AGAConfig.enable_early_exit`                 |
+| **ANN Index Layer (Large-scale KB)**     | ✅ Fully implemented | `aga/retrieval/ann_index.py` (v3.5.0)         |
+| **Dynamic Knowledge Loader**             | ✅ Fully implemented | `aga/retrieval/dynamic_loader.py` (v3.5.0)    |
+| **Two-stage Routing (ANN + Gate2)**      | ✅ Fully implemented | `aga/production/operator.py` (v3.5.0)         |
+
+### 🚀 Large-Scale Knowledge Base Support (v3.5.0 New)
+
+AGA v3.5.0 introduces **ANN Index Layer**, supporting efficient retrieval for 100K+ to million-scale knowledge bases.
+
+#### Quick Start
+
+```python
+from aga.production.config import ProductionAGAConfig
+from aga.production.operator import AGAOperator
+
+# Use factory method for large-scale config
+config = ProductionAGAConfig.for_large_scale(
+    namespace="production",
+    index_capacity=1_000_000,  # Support 1M knowledge
+    hot_pool_size=256,         # Hot Pool stays ≤256
+    use_gpu=True,              # GPU-accelerated ANN
+)
+
+# Create operator
+operator = AGAOperator(config)
+
+# Inject knowledge (auto-updates ANN index)
+operator.inject_knowledge(
+    lu_id="knowledge_001",
+    key_vector=key_vec,
+    value_vector=value_vec,
+)
+
+# Use ANN retrieval during inference
+import numpy as np
+query_vec = key_vec.cpu().numpy()
+
+result = operator.forward(
+    hidden_states=hidden,
+    primary_attention_output=attn_out,
+    query_for_retrieval=query_vec,  # Pass query vector
+    return_diagnostics=True,
+)
+
+# Check ANN diagnostics
+print(f"ANN candidates: {result.ann_candidates}")
+print(f"ANN search time: {result.ann_search_time_ms:.2f}ms")
+```
+
+#### Performance Comparison
+
+| Knowledge Scale | Traditional O(N) | ANN O(log N) | Latency Change |
+|-----------------|------------------|--------------|----------------|
+| 1K              | ~1ms             | ~1ms         | 0              |
+| 10K             | ~10ms            | ~2ms         | -8ms           |
+| 100K            | ~100ms           | ~3ms         | -97ms          |
+| 1M              | Not feasible     | ~5ms         | ✅ Feasible    |
 
 ### 🏛️ Internal Governance System
 

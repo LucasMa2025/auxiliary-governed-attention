@@ -47,6 +47,14 @@ prometheus-client>=0.19.0     # Prometheus 指标导出
 # opentelemetry-sdk>=1.20.0   # OpenTelemetry SDK
 # opentelemetry-exporter-otlp>=1.20.0  # OTLP 导出器
 
+# ==================== ANN 索引（大规模知识库） ====================
+# FAISS - 高性能向量索引 (推荐)
+# faiss-cpu>=1.7.4            # CPU 版本
+# faiss-gpu>=1.7.4            # GPU 版本 (需要 CUDA)
+
+# HNSW - 高召回率图索引 (备选)
+# hnswlib>=0.7.0              # Hierarchical Navigable Small World
+
 # ==================== 高性能注意力（可选） ====================
 # flash-attn>=2.0.0           # FlashAttention 2.x (需要 CUDA)
 # xformers>=0.0.20            # xFormers memory_efficient_attention
