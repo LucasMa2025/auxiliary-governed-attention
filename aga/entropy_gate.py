@@ -15,7 +15,7 @@ AGA 优化熵门控模块 (Enhanced Entropy Gating)
 - 梯度裁剪保护
 """
 import math
-from typing import Optional, Tuple, Dict, Any, Union
+from typing import Optional, Tuple, Dict, Any, Union, TYPE_CHECKING
 from dataclasses import dataclass
 from enum import Enum
 import logging
@@ -25,6 +25,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from .decay import DecayConfig, DecayContext
 
 
 class EntropySource(str, Enum):
@@ -106,17 +109,19 @@ class EntropyCalculator(nn.Module):
         source = self.config.entropy_source
         
         if source == EntropySource.ATTENTION:
-            return self._attention_entropy(attention_weights, hidden_states)
+            entropy = self._attention_entropy(attention_weights, hidden_states)
         elif source == EntropySource.LOGITS:
-            return self._logits_entropy(logits, hidden_states)
+            entropy = self._logits_entropy(logits, hidden_states)
         elif source == EntropySource.HIDDEN_VARIANCE:
-            return self._hidden_variance_entropy(hidden_states)
+            entropy = self._hidden_variance_entropy(hidden_states)
         elif source == EntropySource.MULTI_HEAD:
-            return self._multi_head_entropy(attention_weights, hidden_states)
+            entropy = self._multi_head_entropy(attention_weights, hidden_states)
         elif source == EntropySource.ENSEMBLE:
-            return self._ensemble_entropy(hidden_states, attention_weights, logits)
+            entropy = self._ensemble_entropy(hidden_states, attention_weights, logits)
         else:
-            return self._hidden_variance_entropy(hidden_states)
+            entropy = self._hidden_variance_entropy(hidden_states)
+        
+        return torch.nan_to_num(entropy, nan=0.0, posinf=self.config.entropy_clamp_max, neginf=0.0)
     
     def _attention_entropy(
         self,
@@ -402,6 +407,7 @@ class EntropyGate(nn.Module):
     
     def _update_adaptive_thresholds(self, entropy: torch.Tensor):
         """更新自适应阈值"""
+        entropy = torch.nan_to_num(entropy, nan=0.0, posinf=self.config.entropy_clamp_max, neginf=0.0)
         momentum = self.config.adaptive_momentum
         current_mean = entropy.mean().item()
         current_std = entropy.std().item()

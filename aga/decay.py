@@ -147,6 +147,7 @@ class PersistenceDecay(nn.Module):
             updated_context: 更新后的上下文
         """
         context.layer_idx = layer_idx
+        raw_gate = torch.nan_to_num(raw_gate, nan=0.0, posinf=0.0, neginf=0.0)
         context.current_gate = raw_gate
         
         # 计算衰减因子

@@ -707,6 +707,18 @@ class AuxiliaryGovernedAttention(nn.Module):
         if self.training:
             raise RuntimeError("Cannot inject knowledge during training mode")
         
+        if not torch.is_tensor(key_vector):
+            key_vector = torch.tensor(key_vector)
+        if not torch.is_tensor(value_vector):
+            value_vector = torch.tensor(value_vector)
+        
+        if torch.isnan(key_vector).any() or torch.isinf(key_vector).any():
+            logger.warning(f"Invalid key_vector for lu_id={lu_id}: contains NaN or Inf")
+            return False
+        if torch.isnan(value_vector).any() or torch.isinf(value_vector).any():
+            logger.warning(f"Invalid value_vector for lu_id={lu_id}: contains NaN or Inf")
+            return False
+        
         if slot_idx < 0 or slot_idx >= self.num_slots:
             raise ValueError(f"slot_idx must be in [0, {self.num_slots})")
         
@@ -786,6 +798,13 @@ class AuxiliaryGovernedAttention(nn.Module):
                     key_vector = torch.tensor(key_vector)
                 if isinstance(value_vector, list):
                     value_vector = torch.tensor(value_vector)
+                
+                if torch.isnan(key_vector).any() or torch.isinf(key_vector).any():
+                    logger.warning("Invalid key_vector: contains NaN or Inf")
+                    continue
+                if torch.isnan(value_vector).any() or torch.isinf(value_vector).any():
+                    logger.warning("Invalid value_vector: contains NaN or Inf")
+                    continue
                 
                 # 处理维度和范数
                 if key_vector.dim() > 1:
