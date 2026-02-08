@@ -7,13 +7,14 @@ AGA ANN 索引模块
 - FAISS: Facebook AI Similarity Search
 - HNSW: Hierarchical Navigable Small World
 
-版本: v1.1
+版本: v1.2
 更新: 
 - 添加配置校验 (__post_init__)
 - 增强异常处理和 Fail-Open 机制
 - 添加异步重建支持
 - 向量存储用于 rebuild
 - HNSW 实际重建支持
+- 集成统一监控指标 (v1.2)
 """
 
 import time
@@ -25,6 +26,20 @@ from typing import List, Optional, Tuple, Dict, Any, Set, Callable
 from enum import Enum
 
 import numpy as np
+
+# 监控模块导入
+try:
+    from ..monitoring import (
+        get_metrics_registry,
+        track_ann_search,
+        record_ann_index_metrics,
+    )
+    HAS_MONITORING = True
+except ImportError:
+    HAS_MONITORING = False
+    get_metrics_registry = None
+    track_ann_search = None
+    record_ann_index_metrics = None
 
 logger = logging.getLogger(__name__)
 
@@ -455,16 +470,25 @@ class FAISSIndex(BaseANNIndex):
         query: np.ndarray, 
         top_k: int,
         filter_lu_ids: Optional[Set[str]] = None,
+        namespace: str = "default",
     ) -> Tuple[List[str], List[float]]:
         """
         检索 Top-k
         
         Fail-Open: 出错时返回空结果而非抛出异常
+        
+        Args:
+            query: 查询向量
+            top_k: 返回候选数
+            filter_lu_ids: 可选的 lu_id 过滤集合
+            namespace: 命名空间（用于指标）
         """
         if self._index is None or not self._is_trained:
             return [], []
         
         start = time.perf_counter()
+        status = "success"
+        candidates_count = 0
         
         try:
             with self._lock:
@@ -521,6 +545,8 @@ class FAISSIndex(BaseANNIndex):
                     if len(lu_ids) >= top_k:
                         break
                 
+                candidates_count = len(lu_ids)
+                
                 # 更新统计
                 elapsed = (time.perf_counter() - start) * 1000
                 self._stats["total_searches"] += 1
@@ -533,9 +559,28 @@ class FAISSIndex(BaseANNIndex):
                 
         except Exception as e:
             # Fail-Open: 记录错误但返回空结果
+            status = "error"
             self._stats["search_errors"] += 1
             logger.error(f"Search error (Fail-Open): {e}")
             return [], []
+        
+        finally:
+            # 记录监控指标
+            if HAS_MONITORING:
+                elapsed_sec = time.perf_counter() - start
+                registry = get_metrics_registry()
+                if registry and registry.enabled:
+                    registry.get_metric("ann_search_total").labels(
+                        namespace=namespace,
+                        status=status
+                    ).inc()
+                    registry.get_metric("ann_search_duration_seconds").labels(
+                        namespace=namespace
+                    ).observe(elapsed_sec)
+                    if candidates_count > 0:
+                        registry.get_metric("ann_candidates_returned").labels(
+                            namespace=namespace
+                        ).observe(candidates_count)
     
     def _check_rebuild_needed(self):
         """检查是否需要重建"""
@@ -586,11 +631,15 @@ class FAISSIndex(BaseANNIndex):
     def rebuild_from_vectors(
         self, 
         lu_ids: List[str], 
-        vectors: np.ndarray
+        vectors: np.ndarray,
+        namespace: str = "default",
+        trigger: str = "manual",
     ) -> bool:
         """从向量数据重建索引"""
         if self._index is None:
             return False
+        
+        start = time.perf_counter()
         
         with self._lock:
             logger.info(f"Rebuilding FAISS index from {len(lu_ids)} vectors...")
@@ -613,12 +662,40 @@ class FAISSIndex(BaseANNIndex):
             self._stats["deleted_vectors"] = 0
             self._stats["last_rebuild_time"] = time.time()
             
+            # 记录监控指标
+            if HAS_MONITORING:
+                elapsed_sec = time.perf_counter() - start
+                registry = get_metrics_registry()
+                if registry and registry.enabled:
+                    registry.get_metric("ann_rebuild_total").labels(
+                        namespace=namespace,
+                        trigger=trigger
+                    ).inc()
+                    registry.get_metric("ann_rebuild_duration_seconds").labels(
+                        namespace=namespace
+                    ).observe(elapsed_sec)
+            
             logger.info("FAISS index rebuild completed")
             return True
     
-    def get_statistics(self) -> Dict[str, Any]:
-        """获取统计信息"""
+    def get_statistics(self, namespace: str = "default") -> Dict[str, Any]:
+        """获取统计信息并更新监控指标"""
         with self._lock:
+            total = self._stats["total_vectors"]
+            deleted = self._stats["deleted_vectors"]
+            active = total - deleted
+            deleted_ratio = deleted / total if total > 0 else 0.0
+            
+            # 更新监控指标
+            if HAS_MONITORING:
+                record_ann_index_metrics(
+                    namespace=namespace,
+                    backend=self.config.backend.value,
+                    total_vectors=total,
+                    active_vectors=active,
+                    deleted_ratio=deleted_ratio,
+                )
+            
             return {
                 **self._stats,
                 "index_type": self.config.index_type,
@@ -626,7 +703,8 @@ class FAISSIndex(BaseANNIndex):
                 "use_gpu": self.config.use_gpu,
                 "dim": self.dim,
                 "is_trained": self._is_trained,
-                "active_vectors": self._stats["total_vectors"] - self._stats["deleted_vectors"],
+                "active_vectors": active,
+                "deleted_ratio": deleted_ratio,
                 "stored_vectors": len(self._vectors) if self._vectors else 0,
                 "rebuild_scheduled": self._rebuild_scheduled,
             }
@@ -818,16 +896,25 @@ class HNSWIndex(BaseANNIndex):
         query: np.ndarray, 
         top_k: int,
         filter_lu_ids: Optional[Set[str]] = None,
+        namespace: str = "default",
     ) -> Tuple[List[str], List[float]]:
         """
         检索 Top-k
         
         Fail-Open: 出错时返回空结果而非抛出异常
+        
+        Args:
+            query: 查询向量
+            top_k: 返回候选数
+            filter_lu_ids: 可选的 lu_id 过滤集合
+            namespace: 命名空间（用于指标）
         """
         if self._index is None:
             return [], []
         
         start = time.perf_counter()
+        status = "success"
+        candidates_count = 0
         
         try:
             with self._lock:
@@ -866,6 +953,8 @@ class HNSWIndex(BaseANNIndex):
                     if len(lu_ids) >= top_k:
                         break
                 
+                candidates_count = len(lu_ids)
+                
                 # 更新统计
                 elapsed = (time.perf_counter() - start) * 1000
                 self._stats["total_searches"] += 1
@@ -877,9 +966,28 @@ class HNSWIndex(BaseANNIndex):
                 
         except Exception as e:
             # Fail-Open: 记录错误但返回空结果
+            status = "error"
             self._stats["search_errors"] += 1
             logger.error(f"HNSW search error (Fail-Open): {e}")
             return [], []
+        
+        finally:
+            # 记录监控指标
+            if HAS_MONITORING:
+                elapsed_sec = time.perf_counter() - start
+                registry = get_metrics_registry()
+                if registry and registry.enabled:
+                    registry.get_metric("ann_search_total").labels(
+                        namespace=namespace,
+                        status=status
+                    ).inc()
+                    registry.get_metric("ann_search_duration_seconds").labels(
+                        namespace=namespace
+                    ).observe(elapsed_sec)
+                    if candidates_count > 0:
+                        registry.get_metric("ann_candidates_returned").labels(
+                            namespace=namespace
+                        ).observe(candidates_count)
     
     def rebuild(self) -> bool:
         """
@@ -928,16 +1036,32 @@ class HNSWIndex(BaseANNIndex):
                 logger.error(f"HNSW rebuild failed: {e}")
                 return False
     
-    def get_statistics(self) -> Dict[str, Any]:
-        """获取统计信息"""
+    def get_statistics(self, namespace: str = "default") -> Dict[str, Any]:
+        """获取统计信息并更新监控指标"""
         with self._lock:
+            total = self._stats["total_vectors"]
+            deleted = self._stats["deleted_vectors"]
+            active = total - deleted
+            deleted_ratio = deleted / total if total > 0 else 0.0
+            
+            # 更新监控指标
+            if HAS_MONITORING:
+                record_ann_index_metrics(
+                    namespace=namespace,
+                    backend="hnsw",
+                    total_vectors=total,
+                    active_vectors=active,
+                    deleted_ratio=deleted_ratio,
+                )
+            
             return {
                 **self._stats,
                 "backend": "hnsw",
                 "dim": self.dim,
                 "M": self.config.hnsw_m,
                 "ef_search": self.config.ef_search,
-                "active_vectors": self._stats["total_vectors"] - self._stats["deleted_vectors"],
+                "active_vectors": active,
+                "deleted_ratio": deleted_ratio,
                 "stored_vectors": len(self._vectors),
             }
     

@@ -10,12 +10,13 @@ AGA 动态知识加载器
 - 预取策略
 - Fail-Open 机制
 
-版本: v1.1
+版本: v1.2
 更新:
 - 添加配置校验
 - 增强异常处理
 - 使用 public API 访问 TieredSlotStorage
 - 添加向量范数验证
+- 集成统一监控指标 (v1.2)
 """
 
 import time
@@ -26,6 +27,20 @@ from typing import List, Optional, Dict, Any, Tuple, TYPE_CHECKING
 from collections import OrderedDict
 
 import numpy as np
+
+# 监控模块导入
+try:
+    from ..monitoring import (
+        get_metrics_registry,
+        track_loader,
+        record_cache_metrics,
+    )
+    HAS_MONITORING = True
+except ImportError:
+    HAS_MONITORING = False
+    get_metrics_registry = None
+    track_loader = None
+    record_cache_metrics = None
 
 logger = logging.getLogger(__name__)
 
@@ -268,6 +283,7 @@ class DynamicKnowledgeLoader:
         self, 
         candidate_lu_ids: List[str],
         timeout_ms: Optional[float] = None,
+        namespace: str = "default",
     ) -> LoadResult:
         """
         加载候选槽位
@@ -275,6 +291,7 @@ class DynamicKnowledgeLoader:
         Args:
             candidate_lu_ids: 候选 lu_id 列表
             timeout_ms: 超时时间（毫秒）
+            namespace: 命名空间（用于指标）
             
         Returns:
             LoadResult: 加载结果
@@ -338,6 +355,40 @@ class DynamicKnowledgeLoader:
         # 更新统计
         elapsed = (time.perf_counter() - start_time) * 1000
         self._update_stats(hot_hits, warm_hits, cold_loads, len(failed_lu_ids), elapsed)
+        
+        # 记录监控指标
+        if HAS_MONITORING:
+            registry = get_metrics_registry()
+            if registry and registry.enabled:
+                registry.get_metric("loader_requests_total").labels(
+                    namespace=namespace
+                ).inc()
+                
+                if hot_hits > 0:
+                    registry.get_metric("loader_hot_hits_total").labels(
+                        namespace=namespace
+                    ).inc(hot_hits)
+                
+                if warm_hits > 0:
+                    registry.get_metric("loader_warm_hits_total").labels(
+                        namespace=namespace
+                    ).inc(warm_hits)
+                
+                if cold_loads > 0:
+                    registry.get_metric("loader_cold_loads_total").labels(
+                        namespace=namespace
+                    ).inc(cold_loads)
+                
+                if failed_lu_ids:
+                    registry.get_metric("loader_failures_total").labels(
+                        namespace=namespace,
+                        reason="load_failed"
+                    ).inc(len(failed_lu_ids))
+                
+                registry.get_metric("loader_duration_seconds").labels(
+                    namespace=namespace,
+                    tier="total"
+                ).observe(elapsed / 1000)
         
         return LoadResult(
             loaded_slots=loaded_slots,
@@ -547,16 +598,27 @@ class DynamicKnowledgeLoader:
         except Exception as e:
             logger.debug(f"Prefetch failed: {e}")
     
-    def get_statistics(self) -> Dict[str, Any]:
-        """获取统计信息"""
+    def get_statistics(self, namespace: str = "default") -> Dict[str, Any]:
+        """获取统计信息并更新监控指标"""
         with self._lock:
             total = self._stats["hot_hits"] + self._stats["warm_hits"] + self._stats["cold_loads"]
+            warm_cache_stats = self._warm_cache.get_statistics()
+            
+            # 更新监控指标
+            if HAS_MONITORING:
+                record_cache_metrics(
+                    namespace=namespace,
+                    cache_type="warm",
+                    size=warm_cache_stats.get("size", 0),
+                    hit_rate=warm_cache_stats.get("hit_rate", 0.0),
+                )
+            
             return {
                 **self._stats,
                 "hot_hit_rate": self._stats["hot_hits"] / max(1, total),
                 "warm_hit_rate": self._stats["warm_hits"] / max(1, total),
                 "cold_load_rate": self._stats["cold_loads"] / max(1, total),
-                "warm_cache": self._warm_cache.get_statistics(),
+                "warm_cache": warm_cache_stats,
             }
     
     def clear_warm_cache(self):
