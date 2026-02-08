@@ -6,6 +6,8 @@ AGA 实例协调器
 版本: v3.0
 """
 import asyncio
+import json
+import ast
 import time
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Any, Callable
@@ -68,6 +70,24 @@ class InstanceInfo:
             "avg_latency_ms": self.avg_latency_ms,
             "metadata": self.metadata,
         }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "InstanceInfo":
+        """从字典创建"""
+        return cls(
+            instance_id=data.get("instance_id", ""),
+            namespace=data.get("namespace", "default"),
+            host=data.get("host", "unknown"),
+            port=int(data.get("port", 0)),
+            status=data.get("status", "unknown"),
+            last_heartbeat=float(data.get("last_heartbeat", time.time())),
+            registered_at=float(data.get("registered_at", time.time())),
+            capabilities=list(data.get("capabilities") or []),
+            active_slots=int(data.get("active_slots", 0)),
+            total_requests=int(data.get("total_requests", 0)),
+            avg_latency_ms=float(data.get("avg_latency_ms", 0.0)),
+            metadata=data.get("metadata"),
+        )
 
 
 class InstanceCoordinator:
@@ -198,9 +218,10 @@ class InstanceCoordinator:
         """注册本实例"""
         if self.backend == "redis":
             key = f"aga:{self.namespace}:instances:{self.instance_id}"
+            payload = json.dumps(self._self_info.to_dict(), ensure_ascii=True)
             await self._client.set(
                 key,
-                self._self_info.to_dict().__str__(),
+                payload,
                 ex=self.instance_timeout * 2,
             )
     
@@ -246,8 +267,9 @@ class InstanceCoordinator:
                 
                 data = await self._client.get(key)
                 if data:
-                    # 解析实例信息（简化处理）
-                    if instance_id not in self._instances:
+                    info = self._parse_instance_data(data)
+                    if info is None:
+                        # 无法解析时保底登记
                         info = InstanceInfo(
                             instance_id=instance_id,
                             namespace=self.namespace,
@@ -255,10 +277,37 @@ class InstanceCoordinator:
                             port=0,
                             status="healthy",
                         )
+                    
+                    # 更新/新增实例
+                    existing = self._instances.get(instance_id)
+                    if existing:
+                        existing.host = info.host
+                        existing.port = info.port
+                        existing.status = info.status
+                        existing.capabilities = info.capabilities
+                        existing.active_slots = info.active_slots
+                        existing.total_requests = info.total_requests
+                        existing.avg_latency_ms = info.avg_latency_ms
+                        existing.metadata = info.metadata
+                        existing.last_heartbeat = info.last_heartbeat
+                    else:
                         self._instances[instance_id] = info
-                        
                         if self._on_instance_join:
                             await self._on_instance_join(info)
+
+    def _parse_instance_data(self, data: Any) -> Optional[InstanceInfo]:
+        """解析实例信息，兼容旧格式"""
+        try:
+            text = data.decode() if isinstance(data, (bytes, bytearray)) else str(data)
+            try:
+                payload = json.loads(text)
+            except json.JSONDecodeError:
+                payload = ast.literal_eval(text)
+            if isinstance(payload, dict):
+                return InstanceInfo.from_dict(payload)
+        except Exception as e:
+            logger.debug(f"Failed to parse instance data: {e}")
+        return None
     
     async def _check_instance_health(self):
         """检查实例健康状态"""

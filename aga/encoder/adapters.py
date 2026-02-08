@@ -54,6 +54,9 @@ class HashEncoder(BaseEncoder):
         """使用 SHAKE256 哈希编码文本"""
         import struct
         
+        if text is None:
+            raise ValueError("text must not be None")
+        
         # 计算哈希
         seed = hashlib.sha256(text.encode()).digest()
         
@@ -553,7 +556,10 @@ class OllamaEncoder(BaseEncoder):
             timeout=60.0,
         )
         response.raise_for_status()
-        return response.json()["embedding"]
+        data = response.json()
+        if "embedding" not in data:
+            raise RuntimeError("Ollama embedding response missing 'embedding' field")
+        return data["embedding"]
 
 
 class VLLMEncoder(BaseEncoder):
@@ -634,6 +640,8 @@ class VLLMEncoder(BaseEncoder):
             model=self.model_name,
             input=text,
         )
+        if not response.data:
+            raise RuntimeError("vLLM embedding response is empty")
         return response.data[0].embedding
     
     def encode_batch(self, texts: List[str]) -> List[List[float]]:
@@ -652,6 +660,8 @@ class VLLMEncoder(BaseEncoder):
                 model=self.model_name,
                 input=batch,
             )
+            if not response.data:
+                raise RuntimeError("vLLM embedding response is empty")
             sorted_data = sorted(response.data, key=lambda x: x.index)
             all_embeddings.extend([d.embedding for d in sorted_data])
         

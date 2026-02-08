@@ -139,7 +139,8 @@ class SyncSubscriber:
                             await handler(message)
                         else:
                             # 同步 handler 在异步环境中可能阻塞，使用 to_thread 包装
-                            await asyncio.get_event_loop().run_in_executor(None, handler, message)
+                            loop = asyncio.get_running_loop()
+                            await loop.run_in_executor(None, handler, message)
                     except Exception as handler_error:
                         # 单个 handler 失败不影响其他 handler
                         logger.error(f"Handler error for {type_name}: {handler_error}")
@@ -148,7 +149,8 @@ class SyncSubscriber:
                 if asyncio.iscoroutinefunction(self._default_handler):
                     await self._default_handler(message)
                 else:
-                    await asyncio.get_event_loop().run_in_executor(None, self._default_handler, message)
+                    loop = asyncio.get_running_loop()
+                    await loop.run_in_executor(None, self._default_handler, message)
             else:
                 logger.warning(f"No handler for message type: {type_name}")
             

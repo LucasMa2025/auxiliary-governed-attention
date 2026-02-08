@@ -285,6 +285,14 @@ class SlotPool:
         is_key: bool,
     ) -> torch.Tensor:
         """归一化向量"""
+        if not torch.is_tensor(vector):
+            vector = torch.tensor(vector, device=self.device)
+        elif vector.device != self.device:
+            vector = vector.to(self.device)
+        
+        if not vector.is_floating_point():
+            vector = vector.float()
+        
         if vector.dim() > 1:
             vector = vector.flatten()
         
@@ -293,6 +301,9 @@ class SlotPool:
             vector = F.pad(vector, (0, target_dim - vector.shape[0]))
         elif vector.shape[0] > target_dim:
             vector = vector[:target_dim]
+
+        # NaN/Inf 保护
+        vector = torch.nan_to_num(vector, nan=0.0, posinf=0.0, neginf=0.0)
         
         # 范数裁剪
         if self.config.enable_norm_clipping:

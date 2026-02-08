@@ -185,6 +185,9 @@ class SyncPublisher:
         except Exception as e:
             self._stats["errors"] += 1
             logger.error(f"Publish error: {e}")
+            if wait_ack:
+                self._pending_acks.pop(message.message_id, None)
+                self._ack_results.pop(message.message_id, None)
             return {
                 "success": False,
                 "message_id": message.message_id,

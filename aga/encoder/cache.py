@@ -20,6 +20,7 @@ v1.1 更新:
 import hashlib
 import threading
 import time
+from contextlib import nullcontext
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import List, Dict, Any, Optional, Tuple, TYPE_CHECKING
@@ -232,6 +233,9 @@ class CachedEncoder:
             return xxhash.xxh64(content_bytes).hexdigest()
         else:
             return hashlib.md5(content_bytes).hexdigest()
+
+    def _lock_context(self):
+        return self._lock if self._lock else nullcontext()
     
     def encode(self, text: str) -> List[float]:
         """
@@ -246,28 +250,30 @@ class CachedEncoder:
         cache_key = self._make_cache_key(text)
         
         # 尝试从缓存获取
-        start_time = time.time()
-        cached = self._cache.get(cache_key)
-        
-        if cached is not None:
-            if self._stats:
-                self._stats.hits += 1
-                self._stats.total_cache_time_ms += (time.time() - start_time) * 1000
-            return cached
+        with self._lock_context():
+            start_time = time.perf_counter()
+            cached = self._cache.get(cache_key)
+            
+            if cached is not None:
+                if self._stats:
+                    self._stats.hits += 1
+                    self._stats.total_cache_time_ms += (time.perf_counter() - start_time) * 1000
+                return cached
         
         # 缓存未命中，执行编码
-        encode_start = time.time()
+        encode_start = time.perf_counter()
         vector = self.encoder.encode(text)
-        encode_time = (time.time() - encode_start) * 1000
+        encode_time = (time.perf_counter() - encode_start) * 1000
         
         # 存入缓存
-        evicted = self._cache.put(cache_key, vector)
-        
-        if self._stats:
-            self._stats.misses += 1
-            self._stats.total_encode_time_ms += encode_time
-            if evicted:
-                self._stats.evictions += 1
+        with self._lock_context():
+            evicted = self._cache.put(cache_key, vector)
+            
+            if self._stats:
+                self._stats.misses += 1
+                self._stats.total_encode_time_ms += encode_time
+                if evicted:
+                    self._stats.evictions += 1
         
         return vector
     
@@ -286,23 +292,24 @@ class CachedEncoder:
         uncached_indices: List[int] = []
         
         # 第一遍：检查缓存
-        for i, text in enumerate(texts):
-            cache_key = self._make_cache_key(text)
-            cached = self._cache.get(cache_key)
-            
-            if cached is not None:
-                results[i] = cached
-                if self._stats:
-                    self._stats.hits += 1
-            else:
-                uncached_texts.append(text)
-                uncached_indices.append(i)
-                if self._stats:
-                    self._stats.misses += 1
+        with self._lock_context():
+            for i, text in enumerate(texts):
+                cache_key = self._make_cache_key(text)
+                cached = self._cache.get(cache_key)
+                
+                if cached is not None:
+                    results[i] = cached
+                    if self._stats:
+                        self._stats.hits += 1
+                else:
+                    uncached_texts.append(text)
+                    uncached_indices.append(i)
+                    if self._stats:
+                        self._stats.misses += 1
         
         # 批量编码未缓存的文本
         if uncached_texts:
-            encode_start = time.time()
+            encode_start = time.perf_counter()
             
             # 使用基础编码器的批量编码
             if hasattr(self.encoder, 'encode_batch'):
@@ -310,53 +317,58 @@ class CachedEncoder:
             else:
                 encoded = [self.encoder.encode(t) for t in uncached_texts]
             
-            encode_time = (time.time() - encode_start) * 1000
+            encode_time = (time.perf_counter() - encode_start) * 1000
             if self._stats:
                 self._stats.total_encode_time_ms += encode_time
             
             # 存入缓存并填充结果
-            for idx, text, vec in zip(uncached_indices, uncached_texts, encoded):
-                cache_key = self._make_cache_key(text)
-                evicted = self._cache.put(cache_key, vec)
-                results[idx] = vec
-                
-                if self._stats and evicted:
-                    self._stats.evictions += 1
+            with self._lock_context():
+                for idx, text, vec in zip(uncached_indices, uncached_texts, encoded):
+                    cache_key = self._make_cache_key(text)
+                    evicted = self._cache.put(cache_key, vec)
+                    results[idx] = vec
+                    
+                    if self._stats and evicted:
+                        self._stats.evictions += 1
         
         return results  # type: ignore
     
     def encode_to_key(self, text: str) -> List[float]:
         """编码为 Key 向量（带缓存）"""
         cache_key = self._make_cache_key(text, self.encoder.key_dim)
-        
-        cached = self._cache.get(cache_key)
-        if cached is not None:
-            if self._stats:
-                self._stats.hits += 1
-            return cached
+
+        with self._lock_context():
+            cached = self._cache.get(cache_key)
+            if cached is not None:
+                if self._stats:
+                    self._stats.hits += 1
+                return cached
         
         if self._stats:
             self._stats.misses += 1
         
         vector = self.encoder.encode_to_key(text)
-        self._cache.put(cache_key, vector)
+        with self._lock_context():
+            self._cache.put(cache_key, vector)
         return vector
     
     def encode_to_value(self, text: str) -> List[float]:
         """编码为 Value 向量（带缓存）"""
         cache_key = self._make_cache_key(text, self.encoder.value_dim)
-        
-        cached = self._cache.get(cache_key)
-        if cached is not None:
-            if self._stats:
-                self._stats.hits += 1
-            return cached
+
+        with self._lock_context():
+            cached = self._cache.get(cache_key)
+            if cached is not None:
+                if self._stats:
+                    self._stats.hits += 1
+                return cached
         
         if self._stats:
             self._stats.misses += 1
         
         vector = self.encoder.encode_to_value(text)
-        self._cache.put(cache_key, vector)
+        with self._lock_context():
+            self._cache.put(cache_key, vector)
         return vector
     
     def encode_constraint(
@@ -374,18 +386,20 @@ class CachedEncoder:
         if self._stats is None:
             return {'enabled': False}
         
-        return {
-            'enabled': True,
-            'cache_size': len(self._cache),
-            'max_size': self.config.max_size,
-            **self._stats.to_dict(),
-        }
+        with self._lock_context():
+            return {
+                'enabled': True,
+                'cache_size': len(self._cache),
+                'max_size': self.config.max_size,
+                **self._stats.to_dict(),
+            }
     
     def clear_cache(self):
         """清空缓存"""
-        self._cache.clear()
-        if self._stats:
-            self._stats = CacheStats()
+        with self._lock_context():
+            self._cache.clear()
+            if self._stats:
+                self._stats = CacheStats()
     
     def warm_cache(self, texts: List[str]):
         """
@@ -495,16 +509,19 @@ class PersistentCachedEncoder(CachedEncoder):
     def save_cache(self):
         """保存缓存到磁盘"""
         import json
+        import os
         
         try:
             # 提取缓存数据
             data = {}
             for key, (value, _) in self._cache._cache.items():
                 data[key] = value
-            
-            with open(self.cache_path, 'w') as f:
+
+            tmp_path = f"{self.cache_path}.tmp"
+            with open(tmp_path, 'w', encoding='utf-8') as f:
                 json.dump(data, f)
-            
+
+            os.replace(tmp_path, self.cache_path)
             logger.info(f"Saved {len(data)} cache entries to {self.cache_path}")
         except Exception as e:
             logger.warning(f"Failed to save cache to {self.cache_path}: {e}")

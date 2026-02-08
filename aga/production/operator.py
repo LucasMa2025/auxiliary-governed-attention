@@ -17,6 +17,7 @@ v1.1 更新:
 """
 import math
 import time
+import queue
 import logging
 import threading
 from typing import Optional, Dict, Any, List, Tuple
@@ -112,6 +113,12 @@ class AGAOperator(nn.Module):
         self._aga_applied_count = 0
         self._fail_open_count = 0
         self._total_latency_ms = 0.0
+
+        # 命中记录线程：避免每次 forward 创建线程
+        self._hit_queue: "queue.Queue[List[int]]" = queue.Queue(maxsize=2048)
+        self._stop_hits = threading.Event()
+        self._hit_worker = threading.Thread(target=self._hit_loop, daemon=True)
+        self._hit_worker.start()
     
     def forward(
         self,
@@ -134,38 +141,29 @@ class AGAOperator(nn.Module):
         Returns:
             AGAForwardResult
         """
-        start_time = time.time()
+        start_time = time.perf_counter()
         self._forward_count += 1
         
         # 默认上下文
-        if context is None:
-            context = GateContext(namespace=self.config.namespace)
+        context = context or GateContext(namespace=self.config.namespace)
         
         try:
             # 检查是否有活跃槽位
             if self.slot_pool.active_count == 0:
-                return AGAForwardResult(
-                    output=primary_attention_output,
-                    aga_applied=False,
-                    latency_ms=(time.time() - start_time) * 1000,
-                )
+                return self._bypass_result(primary_attention_output, start_time)
             
             # 获取槽位向量
             with self._slot_lock:
                 slot_keys, slot_values, reliability = self.slot_pool.get_vectors()
             
             if slot_keys.shape[0] == 0:
-                return AGAForwardResult(
-                    output=primary_attention_output,
-                    aga_applied=False,
-                    latency_ms=(time.time() - start_time) * 1000,
-                )
+                return self._bypass_result(primary_attention_output, start_time)
             
             # 查询投影
             query = self.q_proj(hidden_states)
             
             # 计算可靠性掩码
-            reliability_mask = torch.log(reliability + 1e-10)
+            reliability_mask = reliability.clamp_min(1e-10).log()
             
             # 门控链
             top_indices, final_gate, diagnostics = self.gate_chain(
@@ -174,15 +172,16 @@ class AGAOperator(nn.Module):
                 slot_keys=slot_keys,
                 reliability_mask=reliability_mask,
                 logits=logits,
+                query=query,
             )
             
             # 检查是否通过门控
-            if top_indices is None:
+            if top_indices is None or final_gate is None or top_indices.numel() == 0:
                 return AGAForwardResult(
                     output=primary_attention_output,
                     diagnostics=diagnostics if return_diagnostics else None,
                     aga_applied=False,
-                    latency_ms=(time.time() - start_time) * 1000,
+                    latency_ms=(time.perf_counter() - start_time) * 1000,
                 )
             
             # 计算注意力
@@ -205,16 +204,18 @@ class AGAOperator(nn.Module):
             # 记录命中（异步，不阻塞）
             if not self.training:
                 hit_indices = top_indices.reshape(-1).unique().cpu().tolist()
-                # 使用线程避免阻塞
-                threading.Thread(
-                    target=self._record_hits_async,
-                    args=(hit_indices,),
-                    daemon=True,
-                ).start()
+                self._enqueue_hits(hit_indices)
             
             self._aga_applied_count += 1
-            latency_ms = (time.time() - start_time) * 1000
+            latency_ms = (time.perf_counter() - start_time) * 1000
             self._total_latency_ms += latency_ms
+
+            if latency_ms > self.config.max_forward_timeout_ms:
+                logger.warning(
+                    "AGA forward slower than timeout: %.2fms > %dms",
+                    latency_ms,
+                    self.config.max_forward_timeout_ms,
+                )
             
             return AGAForwardResult(
                 output=fused_output,
@@ -231,9 +232,16 @@ class AGAOperator(nn.Module):
             return AGAForwardResult(
                 output=primary_attention_output,
                 aga_applied=False,
-                latency_ms=(time.time() - start_time) * 1000,
+                latency_ms=(time.perf_counter() - start_time) * 1000,
                 error=str(e),
             )
+
+    def _bypass_result(self, primary_attention_output: torch.Tensor, start_time: float) -> AGAForwardResult:
+        return AGAForwardResult(
+            output=primary_attention_output,
+            aga_applied=False,
+            latency_ms=(time.perf_counter() - start_time) * 1000,
+        )
     
     def _compute_attention(
         self,
@@ -262,34 +270,60 @@ class AGAOperator(nn.Module):
         # 需要展平后 gather
         flat_indices = top_indices.reshape(-1)  # [batch * seq * k]
         
-        selected_keys = slot_keys[flat_indices]  # [batch*seq*k, bottleneck_dim]
-        selected_values = slot_values[flat_indices]  # [batch*seq*k, hidden_dim]
+        selected_keys = slot_keys.index_select(0, flat_indices)  # [batch*seq*k, bottleneck_dim]
+        selected_values = slot_values.index_select(0, flat_indices)  # [batch*seq*k, hidden_dim]
         
         # 重塑
         selected_keys = selected_keys.view(batch_size, seq_len, k, -1)
         selected_values = selected_values.view(batch_size, seq_len, k, -1)
         
         # 计算注意力分数
-        query_expanded = query.unsqueeze(2)  # [batch, seq, 1, bottleneck]
-        attn_scores = torch.sum(query_expanded * selected_keys, dim=-1)  # [batch, seq, k]
+        attn_scores = torch.einsum("bsd,bskd->bsk", query, selected_keys)
         attn_scores = attn_scores / math.sqrt(self.config.slot_pool.bottleneck_dim)
         
         # Softmax
         attn_weights = F.softmax(attn_scores, dim=-1)  # [batch, seq, k]
         
         # 加权求和
-        attn_weights_expanded = attn_weights.unsqueeze(-1)  # [batch, seq, k, 1]
-        aux_output = torch.sum(attn_weights_expanded * selected_values, dim=2)  # [batch, seq, hidden]
+        aux_output = torch.einsum("bsk,bskh->bsh", attn_weights, selected_values)
         
         return aux_output
     
-    def _record_hits_async(self, hit_indices: List[int]):
-        """异步记录命中"""
+    def _enqueue_hits(self, hit_indices: List[int]):
+        if not hit_indices:
+            return
         try:
-            with self._slot_lock:
-                self.slot_pool.record_hits(hit_indices)
-        except Exception as e:
-            logger.warning(f"Failed to record hits: {e}")
+            self._hit_queue.put_nowait(hit_indices)
+        except queue.Full:
+            logger.warning("hit queue full, drop %d hit indices", len(hit_indices))
+
+    def _hit_loop(self):
+        while not self._stop_hits.is_set():
+            try:
+                hit_indices = self._hit_queue.get(timeout=0.2)
+            except queue.Empty:
+                continue
+
+            batch = set(hit_indices)
+            while True:
+                try:
+                    batch.update(self._hit_queue.get_nowait())
+                except queue.Empty:
+                    break
+
+            try:
+                with self._slot_lock:
+                    self.slot_pool.record_hits(list(batch))
+            except Exception as e:
+                logger.warning(f"Failed to record hits: {e}")
+
+    def shutdown(self, timeout: float = 1.0):
+        self._stop_hits.set()
+        if self._hit_worker.is_alive():
+            self._hit_worker.join(timeout=timeout)
+
+    def __del__(self):
+        self.shutdown(timeout=0.1)
     
     # ==================== 知识管理接口 ====================
     
@@ -317,6 +351,24 @@ class AGAOperator(nn.Module):
         
         if key_size == 0 or value_size == 0:
             logger.warning(f"inject_knowledge: empty vectors for lu_id={lu_id}")
+            return None
+        
+        if key_size != expected_key_dim:
+            logger.warning(
+                "inject_knowledge: key vector size mismatch for lu_id=%s, got=%d expected=%d",
+                lu_id,
+                key_size,
+                expected_key_dim,
+            )
+            return None
+        
+        if value_size != expected_value_dim:
+            logger.warning(
+                "inject_knowledge: value vector size mismatch for lu_id=%s, got=%d expected=%d",
+                lu_id,
+                value_size,
+                expected_value_dim,
+            )
             return None
         
         with self._slot_lock:
@@ -471,7 +523,7 @@ class ConcurrentAGAManager:
                 # 保存到持久化层
                 if self.persistence:
                     self._operators[namespace].save_to_persistence(self.persistence)
-                
+                self._operators[namespace].shutdown()
                 del self._operators[namespace]
                 return True
             return False

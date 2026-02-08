@@ -266,7 +266,7 @@ class ConnectionPool:
     
     def _acquire(self) -> PooledConnection:
         """获取连接"""
-        start_time = time.time()
+        start_time = time.perf_counter()
         
         with self._lock:
             self._stats.acquire_count += 1
@@ -297,7 +297,7 @@ class ConnectionPool:
             with self._lock:
                 self._stats.idle_connections -= 1
                 self._stats.active_connections += 1
-                self._stats.total_acquire_time_ms += (time.time() - start_time) * 1000
+                self._stats.total_acquire_time_ms += (time.perf_counter() - start_time) * 1000
             
             return conn
             
@@ -313,7 +313,7 @@ class ConnectionPool:
                         self._all_connections.append(conn)
                         self._stats.total_connections += 1
                         self._stats.active_connections += 1
-                        self._stats.total_acquire_time_ms += (time.time() - start_time) * 1000
+                        self._stats.total_acquire_time_ms += (time.perf_counter() - start_time) * 1000
                         return conn
             
             # 重试
@@ -326,7 +326,7 @@ class ConnectionPool:
                     with self._lock:
                         self._stats.idle_connections -= 1
                         self._stats.active_connections += 1
-                        self._stats.total_acquire_time_ms += (time.time() - start_time) * 1000
+                        self._stats.total_acquire_time_ms += (time.perf_counter() - start_time) * 1000
                     
                     return conn
                 except queue.Empty:

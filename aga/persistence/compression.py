@@ -555,14 +555,14 @@ class DecompressionCache:
         if lu_id not in self.cold_storage:
             return None
         
-        start_time = time.time()
+        start_time = time.perf_counter()
         
         # 解压
         compressed_data = self.cold_storage[lu_id]
         key_arr, value_arr = self.compressor.decompress_vectors(compressed_data)
         
         # 统计
-        decompress_time = (time.time() - start_time) * 1000
+        decompress_time = (time.perf_counter() - start_time) * 1000
         self._stats['decompress_count'] += 1
         self._stats['total_decompress_time_ms'] += decompress_time
         
@@ -570,10 +570,10 @@ class DecompressionCache:
         vectors = (key_arr, value_arr)
         
         # 检查容量
-        while len(self.warm_cache) >= self.warm_cache_size:
-            self.warm_cache.popitem(last=False)
-        
-        self.warm_cache[lu_id] = vectors
+        if self.warm_cache_size > 0:
+            while len(self.warm_cache) >= self.warm_cache_size:
+                self.warm_cache.popitem(last=False)
+            self.warm_cache[lu_id] = vectors
         
         return vectors
     

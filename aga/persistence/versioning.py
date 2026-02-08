@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import List, Dict, Any, Optional, Tuple
 import json
+import threading
 import logging
 
 logger = logging.getLogger(__name__)
@@ -138,6 +139,7 @@ class VersionedKnowledgeStore:
         
         # 版本历史缓存 (namespace -> lu_id -> [versions])
         self._version_cache: Dict[str, Dict[str, List[KnowledgeVersion]]] = {}
+        self._cache_lock = threading.RLock()
         
         # 配置
         self.max_versions_per_knowledge = 10  # 每个知识最多保留的版本数
@@ -338,17 +340,19 @@ class VersionedKnowledgeStore:
         lu_id: str,
     ) -> List[KnowledgeVersion]:
         """获取版本历史"""
-        # 检查缓存
-        if namespace in self._version_cache and lu_id in self._version_cache[namespace]:
-            return self._version_cache[namespace][lu_id]
+        with self._cache_lock:
+            # 检查缓存
+            if namespace in self._version_cache and lu_id in self._version_cache[namespace]:
+                return self._version_cache[namespace][lu_id]
         
         # 从持久化层加载
         history = await self._load_version_history(namespace, lu_id)
         
         # 更新缓存
-        if namespace not in self._version_cache:
-            self._version_cache[namespace] = {}
-        self._version_cache[namespace][lu_id] = history
+        with self._cache_lock:
+            if namespace not in self._version_cache:
+                self._version_cache[namespace] = {}
+            self._version_cache[namespace][lu_id] = history
         
         return history
     
@@ -439,6 +443,7 @@ class VersionedKnowledgeStore:
                     'version': version.version,
                     'created_by': version.created_by,
                     'change_reason': version.change_reason,
+                    'version_info': version.to_dict(),
                 },
             })
     
@@ -489,21 +494,23 @@ class VersionedKnowledgeStore:
     
     def _add_to_cache(self, namespace: str, lu_id: str, version: KnowledgeVersion):
         """添加到缓存"""
-        if namespace not in self._version_cache:
-            self._version_cache[namespace] = {}
-        if lu_id not in self._version_cache[namespace]:
-            self._version_cache[namespace][lu_id] = []
-        
-        history = self._version_cache[namespace][lu_id]
-        history.append(version)
-        
-        # 限制历史长度
-        if len(history) > self.max_versions_per_knowledge:
-            self._version_cache[namespace][lu_id] = history[-self.max_versions_per_knowledge:]
+        with self._cache_lock:
+            if namespace not in self._version_cache:
+                self._version_cache[namespace] = {}
+            if lu_id not in self._version_cache[namespace]:
+                self._version_cache[namespace][lu_id] = []
+            
+            history = self._version_cache[namespace][lu_id]
+            history.append(version)
+            
+            # 限制历史长度
+            if len(history) > self.max_versions_per_knowledge:
+                self._version_cache[namespace][lu_id] = history[-self.max_versions_per_knowledge:]
     
     def clear_cache(self, namespace: Optional[str] = None):
         """清除缓存"""
-        if namespace:
-            self._version_cache.pop(namespace, None)
-        else:
-            self._version_cache.clear()
+        with self._cache_lock:
+            if namespace:
+                self._version_cache.pop(namespace, None)
+            else:
+                self._version_cache.clear()

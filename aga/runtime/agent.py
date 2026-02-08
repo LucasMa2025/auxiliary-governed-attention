@@ -85,6 +85,7 @@ class RuntimeAgent:
         self._initialized = False
         self._running = False
         self._start_time = time.time()
+        self._heartbeat_task: Optional[asyncio.Task] = None
         
         # 统计
         self._stats = {
@@ -185,7 +186,7 @@ class RuntimeAgent:
             await self._initial_sync()
         
         # 启动心跳
-        asyncio.create_task(self._heartbeat_loop())
+        self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
         
         self._running = True
         logger.info(f"RuntimeAgent started: {self.instance_id}")
@@ -200,6 +201,16 @@ class RuntimeAgent:
                 await self._subscriber.disconnect()
             except Exception as e:
                 logger.warning(f"Error stopping subscriber: {e}")
+        
+        if self._heartbeat_task:
+            self._heartbeat_task.cancel()
+            try:
+                await self._heartbeat_task
+            except asyncio.CancelledError:
+                pass
+            except Exception as e:
+                logger.debug(f"Heartbeat task stop error: {e}")
+            self._heartbeat_task = None
         
         # 注销（允许失败）
         try:
@@ -398,15 +409,14 @@ class RuntimeAgent:
         
         try:
             import httpx
-            
-            for namespace in self.namespaces:
-                url = f"{self.config.sync.portal_url}/knowledge/{namespace}"
-                params = {"include_vectors": "true", "limit": 1000}
-                
-                # 带重试的请求
-                for attempt in range(max_retries):
-                    try:
-                        async with httpx.AsyncClient() as client:
+            async with httpx.AsyncClient() as client:
+                for namespace in self.namespaces:
+                    url = f"{self.config.sync.portal_url}/knowledge/{namespace}"
+                    params = {"include_vectors": "true", "limit": 1000}
+                    
+                    # 带重试的请求
+                    for attempt in range(max_retries):
+                        try:
                             response = await client.get(url, params=params, timeout=30)
                             if response.status_code == 200:
                                 data = response.json()
@@ -433,13 +443,13 @@ class RuntimeAgent:
                                 logger.warning(f"Initial sync failed for {namespace}: {response.status_code}")
                                 break  # 非网络错误，不重试
                                 
-                    except httpx.RequestError as e:
-                        if attempt < max_retries - 1:
-                            wait_time = 2 ** attempt  # 指数退避
-                            logger.warning(f"Initial sync attempt {attempt + 1} failed for {namespace}, retrying in {wait_time}s: {e}")
-                            await asyncio.sleep(wait_time)
-                        else:
-                            logger.error(f"Initial sync failed for {namespace} after {max_retries} attempts: {e}")
+                        except httpx.RequestError as e:
+                            if attempt < max_retries - 1:
+                                wait_time = 2 ** attempt  # 指数退避
+                                logger.warning(f"Initial sync attempt {attempt + 1} failed for {namespace}, retrying in {wait_time}s: {e}")
+                                await asyncio.sleep(wait_time)
+                            else:
+                                logger.error(f"Initial sync failed for {namespace} after {max_retries} attempts: {e}")
                         
         except Exception as e:
             logger.warning(f"Initial sync failed: {e}")

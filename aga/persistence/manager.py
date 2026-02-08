@@ -47,6 +47,7 @@ class PersistenceManager:
         self.auto_sync = auto_sync
         self._dirty_lu_ids: Set[str] = set()
         self._connected = False
+        self._dirty_lock = asyncio.Lock()
     
     async def connect(self) -> bool:
         """连接到持久化层"""
@@ -218,7 +219,8 @@ class PersistenceManager:
         for slot_idx in slots:
             aga_module.update_lifecycle(slot_idx, new_state)
             if self.auto_sync:
-                self._dirty_lu_ids.add(lu_id)
+                async with self._dirty_lock:
+                    self._dirty_lu_ids.add(lu_id)
         
         # 更新持久化层
         return await self.adapter.update_lifecycle(self.namespace, lu_id, new_state)
@@ -234,7 +236,8 @@ class PersistenceManager:
         # 隔离 AGA
         quarantined = aga_module.quarantine_by_lu_id(lu_id)
         if self.auto_sync:
-            self._dirty_lu_ids.add(lu_id)
+            async with self._dirty_lock:
+                self._dirty_lu_ids.add(lu_id)
         
         # 更新持久化层
         return await self.adapter.update_lifecycle(
@@ -250,11 +253,14 @@ class PersistenceManager:
         Returns:
             同步的槽位数量
         """
-        if not self._dirty_lu_ids:
-            return 0
-        
+        async with self._dirty_lock:
+            if not self._dirty_lu_ids:
+                return 0
+            dirty_ids = set(self._dirty_lu_ids)
+            self._dirty_lu_ids.clear()
+
         records = []
-        for lu_id in self._dirty_lu_ids:
+        for lu_id in dirty_ids:
             slots = aga_module.get_slot_by_lu_id(lu_id)
             for slot_idx in slots:
                 if slot_idx < aga_module.num_slots:
@@ -273,7 +279,6 @@ class PersistenceManager:
                     records.append(record)
         
         count = await self.adapter.save_batch(self.namespace, records)
-        self._dirty_lu_ids.clear()
         return count
     
     async def sync_hit_counts(self, aga_module) -> bool:

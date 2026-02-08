@@ -6,6 +6,7 @@ AGA Runtime 本地缓存
 
 import logging
 import time
+import threading
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Any
 
@@ -76,6 +77,10 @@ class LocalCache:
         self._slots: Dict[str, CachedSlot] = {}  # lu_id -> CachedSlot
         self._slot_idx_map: Dict[int, str] = {}  # slot_idx -> lu_id
         self._next_slot_idx = 0
+        self._free_indices: List[int] = []
+        
+        # 线程锁
+        self._lock = threading.RLock()
         
         # 设备和类型
         if HAS_TORCH:
@@ -112,72 +117,79 @@ class LocalCache:
         Returns:
             分配的槽位索引，如果已满返回 None
         """
-        # 输入验证
-        if not lu_id or not lu_id.strip():
-            logger.warning("Invalid lu_id: empty or whitespace")
-            return None
-        
-        if not key_vector or not value_vector:
-            logger.warning(f"Invalid vectors for {lu_id}: empty key or value vector")
-            return None
-        
-        if len(key_vector) != len(value_vector):
-            logger.warning(f"Vector length mismatch for {lu_id}: key={len(key_vector)}, value={len(value_vector)}")
-            # 允许不同长度，只记录警告
-        
-        # 检查是否已存在
-        if lu_id in self._slots:
-            return self._slots[lu_id].slot_idx
-        
-        # 检查是否已满
-        if len(self._slots) >= self.max_slots:
-            # 尝试淘汰
-            evicted = self._evict_one()
-            if not evicted:
-                logger.warning(f"Cache full, cannot add {lu_id}")
+        with self._lock:
+            # 输入验证
+            if not lu_id or not lu_id.strip():
+                logger.warning("Invalid lu_id: empty or whitespace")
                 return None
-        
-        # 分配槽位
-        slot_idx = self._allocate_slot_idx()
-        
-        # 转换向量
-        try:
-            if HAS_TORCH:
-                key_tensor = torch.tensor(key_vector, device=self._device, dtype=self._dtype)
-                value_tensor = torch.tensor(value_vector, device=self._device, dtype=self._dtype)
-                
-                # 检查 NaN/Inf
-                if torch.isnan(key_tensor).any() or torch.isinf(key_tensor).any():
-                    logger.warning(f"Invalid key_vector for {lu_id}: contains NaN or Inf")
+            
+            if not key_vector or not value_vector:
+                logger.warning(f"Invalid vectors for {lu_id}: empty key or value vector")
+                return None
+            
+            if len(key_vector) != len(value_vector):
+                logger.warning(f"Vector length mismatch for {lu_id}: key={len(key_vector)}, value={len(value_vector)}")
+                # 允许不同长度，只记录警告
+            
+            # 检查是否已存在
+            if lu_id in self._slots:
+                return self._slots[lu_id].slot_idx
+            
+            # 检查是否已满
+            if len(self._slots) >= self.max_slots:
+                # 尝试淘汰
+                evicted = self._evict_one()
+                if not evicted:
+                    logger.warning(f"Cache full, cannot add {lu_id}")
                     return None
-                if torch.isnan(value_tensor).any() or torch.isinf(value_tensor).any():
-                    logger.warning(f"Invalid value_vector for {lu_id}: contains NaN or Inf")
-                    return None
-            else:
-                key_tensor = key_vector
-                value_tensor = value_vector
-        except (TypeError, ValueError) as e:
-            logger.warning(f"Failed to convert vectors for {lu_id}: {e}")
-            return None
-        
-        # 创建槽位
-        slot = CachedSlot(
-            lu_id=lu_id,
-            slot_idx=slot_idx,
-            namespace=namespace,
-            key_vector=key_tensor,
-            value_vector=value_tensor,
-            condition=condition,
-            decision=decision,
-            lifecycle_state=lifecycle_state,
-            trust_tier=trust_tier,
-        )
-        
-        self._slots[lu_id] = slot
-        self._slot_idx_map[slot_idx] = lu_id
-        
-        logger.debug(f"Added {lu_id} to slot {slot_idx}")
-        return slot_idx
+            
+            # 分配槽位
+            slot_idx = self._allocate_slot_idx()
+            if slot_idx is None:
+                logger.warning(f"Cache full, cannot allocate slot for {lu_id}")
+                return None
+            
+            # 转换向量
+            try:
+                if HAS_TORCH:
+                    key_tensor = torch.tensor(key_vector, device=self._device, dtype=self._dtype)
+                    value_tensor = torch.tensor(value_vector, device=self._device, dtype=self._dtype)
+                    
+                    # 检查 NaN/Inf
+                    if torch.isnan(key_tensor).any() or torch.isinf(key_tensor).any():
+                        logger.warning(f"Invalid key_vector for {lu_id}: contains NaN or Inf")
+                        self._free_indices.append(slot_idx)
+                        return None
+                    if torch.isnan(value_tensor).any() or torch.isinf(value_tensor).any():
+                        logger.warning(f"Invalid value_vector for {lu_id}: contains NaN or Inf")
+                        self._free_indices.append(slot_idx)
+                        return None
+                else:
+                    key_tensor = key_vector
+                    value_tensor = value_vector
+            except (TypeError, ValueError) as e:
+                logger.warning(f"Failed to convert vectors for {lu_id}: {e}")
+                self._free_indices.append(slot_idx)
+                return None
+            
+            # 创建槽位
+            slot = CachedSlot(
+                lu_id=lu_id,
+                slot_idx=slot_idx,
+                namespace=namespace,
+                key_vector=key_tensor,
+                value_vector=value_tensor,
+                condition=condition,
+                decision=decision,
+                lifecycle_state=lifecycle_state,
+                trust_tier=trust_tier,
+            )
+            
+            self._slots[lu_id] = slot
+            self._slot_idx_map[slot_idx] = lu_id
+            
+            logger.debug(f"Added {lu_id} to slot {slot_idx}")
+            return slot_idx
     
     def update(
         self,
@@ -186,50 +198,58 @@ class LocalCache:
         trust_tier: Optional[str] = None,
     ) -> bool:
         """更新槽位状态"""
-        if lu_id not in self._slots:
-            return False
-        
-        slot = self._slots[lu_id]
-        
-        if lifecycle_state:
-            slot.lifecycle_state = lifecycle_state
-        if trust_tier:
-            slot.trust_tier = trust_tier
-        
-        return True
+        with self._lock:
+            if lu_id not in self._slots:
+                return False
+            
+            slot = self._slots[lu_id]
+            
+            if lifecycle_state:
+                slot.lifecycle_state = lifecycle_state
+            if trust_tier:
+                slot.trust_tier = trust_tier
+            
+            return True
     
     def remove(self, lu_id: str) -> bool:
         """移除槽位"""
-        if lu_id not in self._slots:
-            return False
-        
-        slot = self._slots.pop(lu_id)
-        self._slot_idx_map.pop(slot.slot_idx, None)
-        
-        logger.debug(f"Removed {lu_id} from slot {slot.slot_idx}")
-        return True
+        with self._lock:
+            if lu_id not in self._slots:
+                return False
+            
+            slot = self._slots.pop(lu_id)
+            self._slot_idx_map.pop(slot.slot_idx, None)
+            if slot.slot_idx not in self._free_indices:
+                self._free_indices.append(slot.slot_idx)
+            
+            logger.debug(f"Removed {lu_id} from slot {slot.slot_idx}")
+            return True
     
     def get(self, lu_id: str) -> Optional[CachedSlot]:
         """获取槽位"""
-        return self._slots.get(lu_id)
+        with self._lock:
+            return self._slots.get(lu_id)
     
     def get_by_idx(self, slot_idx: int) -> Optional[CachedSlot]:
         """通过索引获取槽位"""
-        lu_id = self._slot_idx_map.get(slot_idx)
-        if lu_id:
-            return self._slots.get(lu_id)
-        return None
+        with self._lock:
+            lu_id = self._slot_idx_map.get(slot_idx)
+            if lu_id:
+                return self._slots.get(lu_id)
+            return None
     
     def contains(self, lu_id: str) -> bool:
         """检查是否包含"""
-        return lu_id in self._slots
+        with self._lock:
+            return lu_id in self._slots
     
     def get_all(self, namespace: Optional[str] = None) -> List[CachedSlot]:
         """获取所有槽位"""
-        slots = list(self._slots.values())
-        if namespace:
-            slots = [s for s in slots if s.namespace == namespace]
-        return slots
+        with self._lock:
+            slots = list(self._slots.values())
+            if namespace:
+                slots = [s for s in slots if s.namespace == namespace]
+            return slots
     
     def get_active(self, namespace: Optional[str] = None) -> List[CachedSlot]:
         """获取活跃槽位（非隔离）"""
@@ -277,27 +297,32 @@ class LocalCache:
     
     def clear(self, namespace: Optional[str] = None):
         """清空缓存"""
-        if namespace:
-            to_remove = [lu_id for lu_id, slot in self._slots.items() if slot.namespace == namespace]
-            if not to_remove:
-                logger.debug(f"No slots to clear for namespace: {namespace}")
-                return
-            for lu_id in to_remove:
-                self.remove(lu_id)
-            logger.info(f"Cleared {len(to_remove)} slots for namespace: {namespace}")
-        else:
-            count = len(self._slots)
-            self._slots.clear()
-            self._slot_idx_map.clear()
-            self._next_slot_idx = 0
-            logger.info(f"Cleared all {count} slots from cache")
+        with self._lock:
+            if namespace:
+                to_remove = [lu_id for lu_id, slot in self._slots.items() if slot.namespace == namespace]
+                if not to_remove:
+                    logger.debug(f"No slots to clear for namespace: {namespace}")
+                    return
+                for lu_id in to_remove:
+                    self.remove(lu_id)
+                logger.info(f"Cleared {len(to_remove)} slots for namespace: {namespace}")
+            else:
+                count = len(self._slots)
+                self._slots.clear()
+                self._slot_idx_map.clear()
+                self._free_indices.clear()
+                self._next_slot_idx = 0
+                logger.info(f"Cleared all {count} slots from cache")
     
-    def _allocate_slot_idx(self) -> int:
+    def _allocate_slot_idx(self) -> Optional[int]:
         """分配槽位索引"""
-        # 简单递增
-        idx = self._next_slot_idx
-        self._next_slot_idx += 1
-        return idx
+        if self._free_indices:
+            return self._free_indices.pop(0)
+        if self._next_slot_idx < self.max_slots:
+            idx = self._next_slot_idx
+            self._next_slot_idx += 1
+            return idx
+        return None
     
     def _evict_one(self) -> bool:
         """淘汰一个槽位（LRU）"""
@@ -325,21 +350,22 @@ class LocalCache:
     
     def get_stats(self) -> Dict[str, Any]:
         """获取统计信息"""
-        slots = list(self._slots.values())
-        
-        state_dist = {}
-        total_hits = 0
-        
-        for slot in slots:
-            state = slot.lifecycle_state
-            state_dist[state] = state_dist.get(state, 0) + 1
-            total_hits += slot.hit_count
-        
-        return {
-            "total_slots": len(slots),
-            "max_slots": self.max_slots,
-            "available_slots": self.max_slots - len(slots),
-            "state_distribution": state_dist,
-            "total_hits": total_hits,
-            "device": str(self._device) if self._device else None,
-        }
+        with self._lock:
+            slots = list(self._slots.values())
+            
+            state_dist = {}
+            total_hits = 0
+            
+            for slot in slots:
+                state = slot.lifecycle_state
+                state_dist[state] = state_dist.get(state, 0) + 1
+                total_hits += slot.hit_count
+            
+            return {
+                "total_slots": len(slots),
+                "max_slots": self.max_slots,
+                "available_slots": self.max_slots - len(slots),
+                "state_distribution": state_dist,
+                "total_hits": total_hits,
+                "device": str(self._device) if self._device else None,
+            }

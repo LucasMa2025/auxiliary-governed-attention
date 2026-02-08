@@ -271,6 +271,9 @@ class KnowledgeWriter:
     
     def start(self):
         """启动写入器"""
+        if any(worker.is_alive() for worker in self._workers):
+            return
+
         self._stop_workers.clear()
         
         for i in range(self._num_workers):
@@ -341,6 +344,13 @@ class KnowledgeWriter:
         Returns:
             WriteResult
         """
+        errors = request.validate()
+        if errors:
+            return WriteResult(
+                request_id=request.request_id,
+                status=WriteStatus.FAILED,
+                error=f"Validation failed: {errors}",
+            )
         return self._process_request(request)
     
     def get_result(self, request_id: str) -> Optional[WriteResult]:
@@ -402,6 +412,8 @@ class KnowledgeWriter:
                         self._store_result(error_result)
                     except Exception:
                         pass
+                finally:
+                    self._queue.task_done()
                 
             except queue.Empty:
                 continue
@@ -413,7 +425,7 @@ class KnowledgeWriter:
     
     def _process_request(self, request: WriteRequest) -> WriteResult:
         """处理写入请求"""
-        start_time = time.time()
+        start_time = time.perf_counter()
         
         try:
             # 1. 质量评估
@@ -427,7 +439,7 @@ class KnowledgeWriter:
                         status=WriteStatus.REJECTED,
                         quality_score=score,
                         quality_reason=reason,
-                        latency_ms=(time.time() - start_time) * 1000,
+                        latency_ms=(time.perf_counter() - start_time) * 1000,
                     )
             else:
                 score = 1.0
@@ -454,7 +466,7 @@ class KnowledgeWriter:
                     error="No free slot available",
                     quality_score=score,
                     quality_reason=reason,
-                    latency_ms=(time.time() - start_time) * 1000,
+                    latency_ms=(time.perf_counter() - start_time) * 1000,
                 )
             
             # 4. 持久化
@@ -478,7 +490,7 @@ class KnowledgeWriter:
                 slot_idx=slot_idx,
                 quality_score=score,
                 quality_reason=reason,
-                latency_ms=(time.time() - start_time) * 1000,
+                latency_ms=(time.perf_counter() - start_time) * 1000,
             )
             
         except Exception as e:
@@ -487,7 +499,7 @@ class KnowledgeWriter:
                 request_id=request.request_id,
                 status=WriteStatus.FAILED,
                 error=str(e),
-                latency_ms=(time.time() - start_time) * 1000,
+                latency_ms=(time.perf_counter() - start_time) * 1000,
             )
     
     def _store_result(self, result: WriteResult):

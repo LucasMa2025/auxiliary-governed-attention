@@ -417,7 +417,7 @@ class DynamicSlotPool:
     
     def start_monitor(self, interval_seconds: float = 30.0):
         """启动后台监控"""
-        if self._monitor_thread is not None:
+        if self._monitor_thread is not None and self._monitor_thread.is_alive():
             return
         
         self._stop_monitor.clear()
@@ -435,7 +435,8 @@ class DynamicSlotPool:
             return
         
         self._stop_monitor.set()
-        self._monitor_thread.join(timeout=5.0)
+        if self._monitor_thread.is_alive():
+            self._monitor_thread.join(timeout=5.0)
         self._monitor_thread = None
         logger.info(f"Stopped dynamic slot monitor for namespace={self.namespace}")
     
@@ -493,6 +494,7 @@ class DynamicSlotPool:
         self._current_capacity = new_capacity
         self._slot_pool.max_slots = new_capacity
         self._slot_pool._free_indices.extend(range(old_capacity, new_capacity))
+        self._slot_pool._cache_dirty = True
         self._last_expand_time = time.time()
         
         # 记录事件
@@ -533,6 +535,7 @@ class DynamicSlotPool:
             idx for idx in self._slot_pool._free_indices
             if idx < new_capacity
         ]
+        self._slot_pool._cache_dirty = True
         
         self._last_shrink_time = time.time()
         

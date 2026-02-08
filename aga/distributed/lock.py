@@ -111,6 +111,12 @@ class DistributedLock:
         # 停止自动续期
         if self._extend_task:
             self._extend_task.cancel()
+            try:
+                await self._extend_task
+            except asyncio.CancelledError:
+                pass
+            except Exception as e:
+                logger.debug(f"Auto-extend stop error: {e}")
             self._extend_task = None
         
         # 使用 Lua 脚本确保原子性

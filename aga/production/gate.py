@@ -295,6 +295,7 @@ class GateChain(nn.Module):
         slot_keys: torch.Tensor,
         reliability_mask: Optional[torch.Tensor] = None,
         logits: Optional[torch.Tensor] = None,
+        query: Optional[torch.Tensor] = None,
     ) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor], GateDiagnostics]:
         """
         完整门控流程
@@ -326,8 +327,9 @@ class GateChain(nn.Module):
             return None, None, diagnostics
         
         # Gate-2: Top-k 路由
+        # 优先使用外部提供的 query（与 AGA q_proj 对齐）
         top_indices, router_scores = self.gate2(
-            self._project_query(hidden_states),
+            query if query is not None else self._project_query(hidden_states),
             slot_keys,
             reliability_mask,
         )

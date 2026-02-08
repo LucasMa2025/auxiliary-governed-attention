@@ -100,9 +100,9 @@ class SyncMessage:
             data["lu_id"] = self.lu_id
         if self.slot_idx is not None:
             data["slot_idx"] = self.slot_idx
-        if self.key_vector:
+        if self.key_vector is not None:
             data["key_vector"] = self.key_vector
-        if self.value_vector:
+        if self.value_vector is not None:
             data["value_vector"] = self.value_vector
         if self.lifecycle_state:
             data["lifecycle_state"] = self.lifecycle_state
@@ -110,8 +110,20 @@ class SyncMessage:
             data["condition"] = self.condition
         if self.decision:
             data["decision"] = self.decision
-        if self.records:
+        if self.records is not None:
             data["records"] = self.records
+        if self.trust_tier:
+            data["trust_tier"] = self.trust_tier
+        if self.propagation_policy:
+            data["propagation_policy"] = self.propagation_policy
+        if self.quarantine_reason:
+            data["quarantine_reason"] = self.quarantine_reason
+        if self.approval_id:
+            data["approval_id"] = self.approval_id
+        if self.approval_result is not None:
+            data["approval_result"] = self.approval_result
+        if self.priority:
+            data["priority"] = self.priority
         if self.metadata:
             data["metadata"] = self.metadata
         
@@ -134,6 +146,12 @@ class SyncMessage:
             condition=data.get("condition"),
             decision=data.get("decision"),
             records=data.get("records"),
+            trust_tier=data.get("trust_tier"),
+            propagation_policy=data.get("propagation_policy"),
+            quarantine_reason=data.get("quarantine_reason"),
+            approval_id=data.get("approval_id"),
+            approval_result=data.get("approval_result"),
+            priority=data.get("priority", 0),
             metadata=data.get("metadata"),
         )
 
