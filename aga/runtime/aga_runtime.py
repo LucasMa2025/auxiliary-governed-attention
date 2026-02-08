@@ -102,6 +102,14 @@ class AGARuntime:
             if return_diagnostics:
                 return hidden_states, {"aga_applied": False, "reason": "no_knowledge"}
             return hidden_states, None
+
+        # 设备对齐（避免 device mismatch）
+        if key_matrix.device != hidden_states.device:
+            key_matrix = key_matrix.to(hidden_states.device)
+        if value_matrix.device != hidden_states.device:
+            value_matrix = value_matrix.to(hidden_states.device)
+        if reliability.device != hidden_states.device:
+            reliability = reliability.to(hidden_states.device)
         
         # 计算熵（简化版）
         entropy = self._compute_entropy(hidden_states)
@@ -140,9 +148,27 @@ class AGARuntime:
         
         # 加权求和
         aga_output = torch.matmul(attn_weights, value_matrix)  # [batch, seq, bottleneck]
-        
-        # 投影回 hidden_dim
-        aga_output = self.output_proj(aga_output)
+
+        # 投影回 hidden_dim（兼容不同 value_dim）
+        if aga_output.size(-1) == self.config.bottleneck_dim:
+            aga_output = self.output_proj(aga_output)
+        elif aga_output.size(-1) == self.config.hidden_dim:
+            # 已是 hidden_dim，跳过投影
+            pass
+        else:
+            logger.warning(
+                "Value dim mismatch: got=%d expected=%d or %d",
+                aga_output.size(-1),
+                self.config.bottleneck_dim,
+                self.config.hidden_dim,
+            )
+            if return_diagnostics:
+                return hidden_states, {
+                    "aga_applied": False,
+                    "reason": "value_dim_mismatch",
+                    "value_dim": aga_output.size(-1),
+                }
+            return hidden_states, None
         
         # 应用门控
         gate_expanded = gate_mask.unsqueeze(-1)
