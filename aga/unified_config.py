@@ -48,6 +48,18 @@ class GateConfig:
     # Early Exit
     early_exit_enabled: bool = True
     early_exit_threshold: float = 0.05
+    
+    # 知识注入失败后的行为控制 (v3.1 新增)
+    # - "fallback_to_llm": 回退到原始 LLM 输出 (默认，适用于通用场景)
+    # - "return_no_knowledge": 返回"无相关知识"提示 (适用于私域知识库场景)
+    # - "return_empty": 返回空输出，由上层处理
+    no_match_behavior: str = "fallback_to_llm"
+    no_match_message: str = "抱歉，知识库中没有找到与您问题相关的内容。"
+    no_match_message_en: str = "Sorry, no relevant content was found in the knowledge base."
+    
+    # 强制知识库模式 (私域场景)
+    # 启用后，即使熵低也会尝试匹配知识库，且不会回退到 LLM 幻觉
+    force_knowledge_mode: bool = False
 
 
 @dataclass

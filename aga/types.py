@@ -232,6 +232,12 @@ class AGADiagnostics:
     aga_applied: bool = False
     latency_ms: float = 0.0
     
+    # v3.1: 知识匹配诊断
+    max_router_score: float = 0.0
+    no_knowledge_match: bool = False
+    no_match_triggered: bool = False
+    no_match_behavior: Optional[str] = None
+    
     # 错误信息
     error: Optional[str] = None
 
@@ -287,4 +293,7 @@ class AGAForwardResult:
     aga_applied: bool = False
     latency_ms: float = 0.0
     error: Optional[str] = None
+    
+    # v3.1: 知识匹配状态
+    no_knowledge_match: bool = False  # 是否未匹配到相关知识
 

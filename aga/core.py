@@ -86,6 +86,16 @@ class AGADiagnostics:
     gate_mean: float = 0.0
     gate_max: float = 0.0
     early_exit_ratio: float = 0.0  # 提前退出比例
+    # v2.2 新增: 知识匹配失败
+    no_match_response: bool = False  # 是否返回"无相关知识"响应
+    no_match_text: Optional[str] = None  # 预设的无匹配响应文本
+
+
+class KnowledgeMatchFailBehavior(str, Enum):
+    """知识匹配失败行为"""
+    BYPASS_LLM = "bypass_llm"  # 完全旁路 AGA，返回原始 LLM 输出 (默认)
+    RETURN_NO_MATCH = "return_no_match"  # 返回预设的"无相关知识"响应
+    FORCE_ZERO_ALPHA = "force_zero_alpha"  # 强制 alpha=0，但仍通过 AGA 流程
 
 
 @dataclass 
@@ -112,6 +122,11 @@ class AGAConfig:
     enable_auto_deprecate: bool = False # 是否启用自动降级
     logits_temperature: float = 1.0    # logits entropy 温度参数
     chunk_size: int = 64               # 路由分块大小（内存优化）
+    # v2.2 新增: 知识匹配失败行为
+    knowledge_match_fail_behavior: KnowledgeMatchFailBehavior = KnowledgeMatchFailBehavior.BYPASS_LLM
+    no_match_response_cn: str = "抱歉，我在知识库中没有找到与您问题相关的内容。"
+    no_match_response_en: str = "Sorry, I couldn't find relevant information in the knowledge base."
+    knowledge_relevance_threshold: float = 0.3  # 知识相关性阈值
 
 
 class UncertaintyEstimator(nn.Module):
@@ -464,6 +479,19 @@ class AuxiliaryGovernedAttention(nn.Module):
         # 检查是否有活跃槽位
         active_count = self.get_active_slots()
         if active_count == 0:
+            # v2.2: 根据配置决定知识匹配失败行为
+            if self.config.knowledge_match_fail_behavior == KnowledgeMatchFailBehavior.RETURN_NO_MATCH:
+                if return_diagnostics:
+                    diagnostics = AGADiagnostics(
+                        entropy=torch.zeros(1, device=device),
+                        gate=torch.zeros(1, device=device),
+                        aux_attn_weights=torch.zeros(1, device=device),
+                        slot_reliability=torch.zeros(1, device=device),
+                        active_slots=0,
+                        no_match_response=True,
+                        no_match_text=self.config.no_match_response_cn,
+                    )
+                    return primary_attention_output, diagnostics
             return primary_attention_output, None
         
         # 1. 计算不确定性和门控（提前计算用于 early exit）
