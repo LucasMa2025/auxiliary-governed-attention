@@ -92,6 +92,13 @@ class DynamicLoaderConfig:
     warm_cache_ttl_seconds: float = 3600.0  # Warm 缓存 TTL
 
 
+class KnowledgeMatchFailBehavior(str, Enum):
+    """知识匹配失败行为"""
+    BYPASS_LLM = "bypass_llm"  # 完全旁路 AGA，返回原始 LLM 输出 (默认)
+    RETURN_NO_MATCH = "return_no_match"  # 返回预设的"无相关知识"响应
+    FORCE_ZERO_ALPHA = "force_zero_alpha"  # 强制 alpha=0，但仍通过 AGA 流程
+
+
 @dataclass
 class GateConfig:
     """
@@ -122,6 +129,20 @@ class GateConfig:
     # 融合配置
     tau_low: float = 0.5  # 熵否决下限
     tau_high: float = 2.0  # 熵否决上限
+    
+    # 知识匹配失败行为 (v1.2 新增)
+    # 当 Gate-2 路由未能找到足够相关知识时，AGA 的行为
+    # - bypass_llm: 完全旁路 AGA，返回原始 LLM 输出 (默认，适合通用场景)
+    # - return_no_match: 返回预设的"无相关知识"响应 (适合私域知识库，防止幻觉)
+    # - force_zero_alpha: 强制 alpha=0，但仍通过 AGA 流程 (调试用)
+    knowledge_match_fail_behavior: KnowledgeMatchFailBehavior = KnowledgeMatchFailBehavior.BYPASS_LLM
+    
+    # 知识匹配失败时的预设响应 (仅 return_no_match 模式使用)
+    no_match_response_cn: str = "抱歉，我在知识库中没有找到与您问题相关的内容。请尝试换一种方式提问，或联系管理员补充相关知识。"
+    no_match_response_en: str = "Sorry, I couldn't find relevant information in the knowledge base. Please try rephrasing your question or contact the administrator to add relevant knowledge."
+    
+    # 知识匹配相关性阈值 (低于此值视为匹配失败)
+    knowledge_relevance_threshold: float = 0.3
 
 
 @dataclass

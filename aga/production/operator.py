@@ -37,7 +37,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .config import ProductionAGAConfig, GateConfig, SlotPoolConfig
+from .config import ProductionAGAConfig, GateConfig, SlotPoolConfig, KnowledgeMatchFailBehavior
 from .gate import GateChain, GateContext, GateResult, GateDiagnostics
 from .slot_pool import SlotSubspacePool, SlotPool, Slot, LifecycleState
 from .persistence import PersistenceManager
@@ -81,6 +81,10 @@ class AGAForwardResult:
     hot_hits: int = 0  # Hot 层命中数
     warm_hits: int = 0  # Warm 层命中数
     cold_loads: int = 0  # Cold 层加载数
+    
+    # v1.3 新增: 知识匹配失败行为
+    no_match_response: bool = False  # 是否返回"无相关知识"响应
+    no_match_text: Optional[str] = None  # 预设的无匹配响应文本
 
 
 class AGAOperator(nn.Module):
@@ -321,6 +325,29 @@ class AGAOperator(nn.Module):
             
             # 检查是否通过门控
             if top_indices is None or final_gate is None or top_indices.numel() == 0:
+                # v1.3: 根据配置决定知识匹配失败行为
+                fail_behavior = self.config.gate.knowledge_match_fail_behavior
+                
+                if fail_behavior == KnowledgeMatchFailBehavior.RETURN_NO_MATCH:
+                    # 返回预设的"无相关知识"响应
+                    # 注意：这里返回的是标记，实际响应文本由上层应用处理
+                    return AGAForwardResult(
+                        output=primary_attention_output,
+                        diagnostics=diagnostics if return_diagnostics else None,
+                        aga_applied=False,
+                        latency_ms=(time.perf_counter() - start_time) * 1000,
+                        ann_candidates=ann_candidates,
+                        ann_search_time_ms=ann_search_time_ms,
+                        no_match_response=True,
+                        no_match_text=self.config.gate.no_match_response_cn,
+                    )
+                elif fail_behavior == KnowledgeMatchFailBehavior.FORCE_ZERO_ALPHA:
+                    # 强制 alpha=0，继续通过 AGA 流程但不注入
+                    logger.debug("Knowledge match failed, forcing alpha=0")
+                    # 继续执行，但 final_gate 已经是 None，所以实际上会 bypass
+                    pass
+                # 默认 BYPASS_LLM: 直接返回原始输出
+                
                 return AGAForwardResult(
                     output=primary_attention_output,
                     diagnostics=diagnostics if return_diagnostics else None,

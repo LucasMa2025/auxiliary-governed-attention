@@ -479,6 +479,46 @@ class AGAOperator(nn.Module):
                 diagnostics.routed_slots = routed_slots
                 diagnostics.router_scores = router_scores
             
+            # v3.1: 检测知识匹配质量
+            # 如果 router_scores 最大值过低，说明没有匹配到相关知识
+            max_router_score = router_scores.max().item() if router_scores is not None else 0.0
+            knowledge_match_threshold = 0.1  # 可配置的匹配阈值
+            
+            no_knowledge_match = max_router_score < knowledge_match_threshold
+            
+            if diagnostics:
+                diagnostics.max_router_score = max_router_score
+                diagnostics.no_knowledge_match = no_knowledge_match
+            
+            # v3.1: 知识注入失败后的行为控制
+            if no_knowledge_match:
+                no_match_behavior = getattr(self.config.gate, 'no_match_behavior', 'fallback_to_llm')
+                force_knowledge_mode = getattr(self.config.gate, 'force_knowledge_mode', False)
+                
+                if force_knowledge_mode or no_match_behavior == "return_no_knowledge":
+                    # 私域知识库模式：不回退到 LLM，返回"无相关知识"
+                    if diagnostics:
+                        diagnostics.no_match_triggered = True
+                        diagnostics.no_match_behavior = no_match_behavior
+                    
+                    return AGAForwardResult(
+                        output=primary_attention_output,  # 返回原始输出，但标记为无匹配
+                        diagnostics=diagnostics,
+                        aga_applied=False,
+                        no_knowledge_match=True,
+                        latency_ms=(time.time() - start_time) * 1000,
+                    )
+                elif no_match_behavior == "return_empty":
+                    # 返回空输出，由上层处理
+                    return AGAForwardResult(
+                        output=torch.zeros_like(primary_attention_output),
+                        diagnostics=diagnostics,
+                        aga_applied=False,
+                        no_knowledge_match=True,
+                        latency_ms=(time.time() - start_time) * 1000,
+                    )
+                # else: fallback_to_llm - 继续正常融合
+            
             # Value Projection
             if self.config.slot_pool.use_value_projection:
                 aux_output = self.value_down(aux_output)

@@ -22,6 +22,13 @@ except ImportError:
 from ..config.runtime import AGAModuleConfig
 from .cache import LocalCache
 
+# 知识匹配失败行为枚举
+class KnowledgeMatchFailBehavior:
+    """知识匹配失败行为"""
+    BYPASS_LLM = "bypass_llm"  # 完全旁路 AGA，返回原始 LLM 输出 (默认)
+    RETURN_NO_MATCH = "return_no_match"  # 返回预设的"无相关知识"响应
+    FORCE_ZERO_ALPHA = "force_zero_alpha"  # 强制 alpha=0，但仍通过 AGA 流程
+
 
 class AGARuntime:
     """
@@ -40,6 +47,9 @@ class AGARuntime:
         config: AGAModuleConfig,
         cache: LocalCache,
         namespace: str = "default",
+        knowledge_match_fail_behavior: str = KnowledgeMatchFailBehavior.BYPASS_LLM,
+        no_match_response_cn: str = "抱歉，我在知识库中没有找到与您问题相关的内容。",
+        no_match_response_en: str = "Sorry, I couldn't find relevant information in the knowledge base.",
     ):
         """
         初始化 Runtime
@@ -48,6 +58,9 @@ class AGARuntime:
             config: AGA 模块配置
             cache: 本地缓存
             namespace: 命名空间
+            knowledge_match_fail_behavior: 知识匹配失败行为
+            no_match_response_cn: 中文无匹配响应
+            no_match_response_en: 英文无匹配响应
         """
         if not HAS_TORCH:
             raise ImportError("需要安装 PyTorch")
@@ -55,6 +68,11 @@ class AGARuntime:
         self.config = config
         self.cache = cache
         self.namespace = namespace
+        
+        # 知识匹配失败行为配置
+        self.knowledge_match_fail_behavior = knowledge_match_fail_behavior
+        self.no_match_response_cn = no_match_response_cn
+        self.no_match_response_en = no_match_response_en
         
         # 设备
         device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -73,6 +91,7 @@ class AGARuntime:
             "forward_count": 0,
             "aga_applied_count": 0,
             "bypass_count": 0,
+            "no_match_count": 0,  # v1.3 新增
         }
     
     def forward(
@@ -98,7 +117,21 @@ class AGARuntime:
         key_matrix, value_matrix, reliability = self.cache.get_vectors(self.namespace)
         
         if key_matrix is None or len(key_matrix) == 0:
-            # 无知识，直接返回
+            # 无知识，根据配置决定行为
+            self._stats["no_match_count"] += 1
+            
+            if self.knowledge_match_fail_behavior == KnowledgeMatchFailBehavior.RETURN_NO_MATCH:
+                # 返回预设的"无相关知识"响应标记
+                if return_diagnostics:
+                    return hidden_states, {
+                        "aga_applied": False,
+                        "reason": "no_knowledge",
+                        "no_match_response": True,
+                        "no_match_text": self.no_match_response_cn,
+                    }
+                return hidden_states, {"no_match_response": True, "no_match_text": self.no_match_response_cn}
+            
+            # 默认 BYPASS_LLM: 直接返回原始输出
             if return_diagnostics:
                 return hidden_states, {"aga_applied": False, "reason": "no_knowledge"}
             return hidden_states, None
@@ -118,11 +151,18 @@ class AGARuntime:
         gate_mask = (entropy > self.entropy_threshold).float()
         
         if gate_mask.sum() < 0.1:
-            # 熵太低，不需要 AGA
+            # 熵太低，不需要 AGA (模型自信)
             self._stats["bypass_count"] += 1
             if return_diagnostics:
                 return hidden_states, {"aga_applied": False, "reason": "low_entropy", "entropy_mean": entropy.mean().item()}
             return hidden_states, None
+        
+        # 高熵时检查知识匹配
+        # 如果熵很高但没有相关知识，根据配置决定行为
+        if entropy.mean().item() > self.high_entropy_threshold:
+            # 高熵场景，AGA 应该介入
+            # 但如果后续没有匹配到知识，会在 Top-K 选择后处理
+            pass
         
         # 投影到 bottleneck
         query = self.query_proj(hidden_states)  # [batch, seq, bottleneck]
