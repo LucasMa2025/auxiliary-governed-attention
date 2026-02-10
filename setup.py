@@ -27,7 +27,7 @@ setup(
     description="Auxiliary Governed Attention - Zero-training knowledge injection for frozen Transformers",
     long_description=long_description,
     long_description_content_type="text/markdown",
-    url="https://github.com/LucasMa-Research/auxiliary-governed-attention",
+    url="https://github.com/LucasMa2025/auxiliary-governed-attention",
     packages=find_packages(),
     classifiers=[
         "Development Status :: 4 - Beta",
