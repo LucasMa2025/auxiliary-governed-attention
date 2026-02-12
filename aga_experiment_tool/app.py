@@ -800,34 +800,73 @@ MAIN_TEMPLATE = """
         
         <!-- Knowledge Injection -->
         <div class="card">
-            <div class="card-header">💉 Knowledge Injection</div>
+            <div class="card-header">💉 Knowledge Injection / 知识注入</div>
             <div class="card-body">
                 <div class="form-group">
-                    <label>Condition (When to activate)</label>
-                    <input type="text" id="condition" placeholder="e.g., capital of France">
+                    <label>Condition / 触发条件 (When to activate)</label>
+                    <input type="text" id="condition" placeholder="e.g., capital of France / 法国的首都">
                 </div>
                 <div class="form-group">
-                    <label>Decision (What to add)</label>
-                    <input type="text" id="decision" placeholder="e.g., Paris">
+                    <label>Decision / 决策内容 (What to add)</label>
+                    <input type="text" id="decision" placeholder="e.g., Paris / 巴黎">
                 </div>
                 <div class="form-group">
-                    <label>Lifecycle State</label>
+                    <label>Lifecycle State / 生命周期状态</label>
                     <select id="lifecycle">
-                        <option value="probationary">Probationary (r=0.3)</option>
-                        <option value="confirmed">Confirmed (r=1.0)</option>
+                        <option value="confirmed" selected>✅ Confirmed / 已审核 (r=1.0) - 推荐</option>
+                        <option value="probationary">⏳ Probationary / 试用期 (r=0.3)</option>
+                        <option value="deprecated">⚠️ Deprecated / 已弃用 (r=0.1)</option>
                     </select>
                 </div>
-                <button class="btn btn-primary" onclick="injectKnowledge()">Inject Knowledge</button>
+                <div class="form-group">
+                    <label>Category / 分类 (Optional)</label>
+                    <input type="text" id="category" placeholder="e.g., geography, science, general">
+                </div>
+                <div class="btn-group">
+                    <button class="btn btn-primary" onclick="injectKnowledge()">💉 Inject Knowledge / 注入知识</button>
+                    <button class="btn btn-secondary" onclick="injectBatch()">📦 Batch Import / 批量导入</button>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Batch Import Modal -->
+        <div id="batchModal" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.8); z-index: 1000; align-items: center; justify-content: center;">
+            <div style="background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 24px; width: 600px; max-height: 80vh; overflow-y: auto;">
+                <h3 style="color: #58a6ff; margin-bottom: 16px;">📦 Batch Import Knowledge / 批量导入知识</h3>
+                <div class="form-group">
+                    <label>JSON Format (one knowledge per line or array)</label>
+                    <textarea id="batchJson" rows="10" placeholder='[
+  {"condition": "什么是 AGA", "decision": "AGA 是辅助治理注意力系统"},
+  {"condition": "什么是 DKI", "decision": "DKI 是动态 KV 注入系统"}
+]'></textarea>
+                </div>
+                <div class="form-group">
+                    <label>Default Lifecycle State</label>
+                    <select id="batchLifecycle">
+                        <option value="confirmed" selected>✅ Confirmed / 已审核</option>
+                        <option value="probationary">⏳ Probationary / 试用期</option>
+                    </select>
+                </div>
+                <div class="btn-group">
+                    <button class="btn btn-primary" onclick="executeBatchImport()">Import / 导入</button>
+                    <button class="btn btn-secondary" onclick="closeBatchModal()">Cancel / 取消</button>
+                </div>
             </div>
         </div>
         
         <!-- Knowledge List -->
         <div class="card">
-            <div class="card-header">📚 Injected Knowledge</div>
+            <div class="card-header">📚 Injected Knowledge / 已注入知识
+                <span style="margin-left: auto; font-size: 12px; color: #8b949e;">
+                    <span class="badge badge-confirmed">✅ 已审核</span>
+                    <span class="badge badge-probationary">⏳ 试用期</span>
+                    <span class="badge badge-deprecated">⚠️ 已弃用</span>
+                </span>
+            </div>
             <div class="card-body">
                 <div class="knowledge-list" id="knowledgeList">
                     <div style="color: #8b949e; text-align: center; padding: 20px;">
-                        No knowledge injected yet
+                        No knowledge injected yet / 暂无注入的知识
                     </div>
                 </div>
             </div>
@@ -947,20 +986,34 @@ What is 2 + 2?"></textarea>
                 const listDiv = document.getElementById('knowledgeList');
                 
                 if (data.length === 0) {
-                    listDiv.innerHTML = '<div style="color: #8b949e; text-align: center; padding: 20px;">No knowledge injected yet</div>';
+                    listDiv.innerHTML = '<div style="color: #8b949e; text-align: center; padding: 20px;">No knowledge injected yet / 暂无注入的知识</div>';
                     return;
                 }
+                
+                // 状态映射
+                const stateLabels = {
+                    'confirmed': '✅ 已审核',
+                    'probationary': '⏳ 试用期',
+                    'deprecated': '⚠️ 已弃用',
+                    'quarantined': '🚫 已隔离'
+                };
                 
                 listDiv.innerHTML = data.map(k => `
                     <div class="knowledge-item">
                         <div><span class="condition">${k.condition || 'N/A'}</span> → <span class="decision">${k.decision || 'N/A'}</span></div>
                         <div class="meta">
-                            <span class="badge badge-${k.lifecycle_state}">${k.lifecycle_state}</span>
-                            LU: ${k.lu_id} | Slot: ${k.slot_idx} | Hits: ${k.hit_count}
+                            <span class="badge badge-${k.lifecycle_state}">${stateLabels[k.lifecycle_state] || k.lifecycle_state}</span>
+                            <span style="margin-left: 8px;">LU: ${k.lu_id}</span>
+                            <span style="margin-left: 8px;">Slot: ${k.slot_idx}</span>
+                            <span style="margin-left: 8px;">Hits: ${k.hit_count}</span>
+                            <span style="margin-left: 8px;">Reliability: ${(k.reliability * 100).toFixed(0)}%</span>
                         </div>
                         <div class="knowledge-actions">
-                            <button class="btn btn-secondary" onclick="confirmKnowledge('${k.lu_id}')">Confirm</button>
-                            <button class="btn btn-danger" onclick="quarantineKnowledge('${k.lu_id}')">Quarantine</button>
+                            ${k.lifecycle_state !== 'confirmed' ? 
+                                `<button class="btn btn-secondary" onclick="confirmKnowledge('${k.lu_id}')">✅ Confirm / 审核通过</button>` : 
+                                `<button class="btn btn-secondary" disabled style="opacity: 0.5;">✅ Already Confirmed</button>`
+                            }
+                            <button class="btn btn-danger" onclick="quarantineKnowledge('${k.lu_id}')">🚫 Quarantine / 隔离</button>
                         </div>
                     </div>
                 `).join('');
@@ -971,20 +1024,21 @@ What is 2 + 2?"></textarea>
         
         async function injectKnowledge() {
             if (!currentModel) {
-                log('Please load a model first', 'error');
+                log('Please load a model first / 请先加载模型', 'error');
                 return;
             }
             
             const condition = document.getElementById('condition').value;
             const decision = document.getElementById('decision').value;
             const lifecycle = document.getElementById('lifecycle').value;
+            const category = document.getElementById('category').value || 'general';
             
             if (!condition || !decision) {
-                log('Please fill in both condition and decision', 'error');
+                log('Please fill in both condition and decision / 请填写触发条件和决策内容', 'error');
                 return;
             }
             
-            log(`Injecting knowledge: "${condition}" → "${decision}"...`);
+            log(`Injecting knowledge (${lifecycle}): "${condition}" → "${decision}"...`);
             
             try {
                 const response = await fetch('/api/inject', {
@@ -994,23 +1048,92 @@ What is 2 + 2?"></textarea>
                         model: currentModel,
                         condition: condition,
                         decision: decision,
-                        lifecycle_state: lifecycle
+                        lifecycle_state: lifecycle,
+                        category: category
                     })
                 });
                 const data = await response.json();
                 
                 if (data.success) {
-                    log(`Knowledge injected: ${data.lu_id} at slot ${data.slot_idx}`, 'success');
+                    const stateEmoji = lifecycle === 'confirmed' ? '✅' : (lifecycle === 'probationary' ? '⏳' : '⚠️');
+                    log(`${stateEmoji} Knowledge injected: ${data.lu_id} at slot ${data.slot_idx} (${lifecycle})`, 'success');
                     refreshStats();
                     refreshKnowledge();
                     document.getElementById('condition').value = '';
                     document.getElementById('decision').value = '';
+                    document.getElementById('category').value = '';
                 } else {
                     log(`Injection failed: ${data.error}`, 'error');
                 }
             } catch (e) {
                 log(`Error: ${e.message}`, 'error');
             }
+        }
+        
+        function injectBatch() {
+            document.getElementById('batchModal').style.display = 'flex';
+        }
+        
+        function closeBatchModal() {
+            document.getElementById('batchModal').style.display = 'none';
+        }
+        
+        async function executeBatchImport() {
+            if (!currentModel) {
+                log('Please load a model first / 请先加载模型', 'error');
+                closeBatchModal();
+                return;
+            }
+            
+            const jsonText = document.getElementById('batchJson').value;
+            const defaultLifecycle = document.getElementById('batchLifecycle').value;
+            
+            let knowledgeList;
+            try {
+                knowledgeList = JSON.parse(jsonText);
+                if (!Array.isArray(knowledgeList)) {
+                    knowledgeList = [knowledgeList];
+                }
+            } catch (e) {
+                log(`Invalid JSON format: ${e.message}`, 'error');
+                return;
+            }
+            
+            log(`Batch importing ${knowledgeList.length} knowledge items...`);
+            
+            let successCount = 0;
+            let failCount = 0;
+            
+            for (const item of knowledgeList) {
+                try {
+                    const response = await fetch('/api/inject', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({
+                            model: currentModel,
+                            condition: item.condition,
+                            decision: item.decision,
+                            lifecycle_state: item.lifecycle_state || defaultLifecycle,
+                            category: item.category || 'general'
+                        })
+                    });
+                    const data = await response.json();
+                    
+                    if (data.success) {
+                        successCount++;
+                    } else {
+                        failCount++;
+                        log(`Failed: ${item.condition} - ${data.error}`, 'error');
+                    }
+                } catch (e) {
+                    failCount++;
+                }
+            }
+            
+            log(`Batch import completed: ${successCount} success, ${failCount} failed`, successCount > 0 ? 'success' : 'error');
+            refreshStats();
+            refreshKnowledge();
+            closeBatchModal();
         }
         
         async function confirmKnowledge(luId) {
