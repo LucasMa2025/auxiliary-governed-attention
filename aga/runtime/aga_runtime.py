@@ -265,6 +265,7 @@ class AGARuntime:
             "forward_count": 0,
             "aga_applied_count": 0,
             "bypass_count": 0,
+            "no_match_count": 0,
         }
 
 
