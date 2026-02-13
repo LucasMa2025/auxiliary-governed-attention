@@ -384,6 +384,24 @@ class RedisAdapter(PersistenceAdapter):
     
     # ==================== 命中计数 ====================
     
+    # Lua 脚本：原子地对多个 slot 键批量 +1 hit_count
+    _INCREMENT_HIT_LUA = """
+    local now = ARGV[1]
+    local ttl = tonumber(ARGV[2])
+    local updated = 0
+    for i = 1, #KEYS do
+        local raw = redis.call('GET', KEYS[i])
+        if raw then
+            local slot = cjson.decode(raw)
+            slot['hit_count'] = (slot['hit_count'] or 0) + 1
+            slot['updated_at'] = now
+            redis.call('SET', KEYS[i], cjson.encode(slot), 'EX', ttl)
+            updated = updated + 1
+        end
+    end
+    return updated
+    """
+
     async def increment_hit_count(
         self, 
         namespace: str, 
@@ -393,11 +411,20 @@ class RedisAdapter(PersistenceAdapter):
             return True
         
         try:
-            for lu_id in lu_ids:
-                record = await self.load_slot(namespace, lu_id)
-                if record:
-                    record.hit_count += 1
-                    await self.save_slot(namespace, record)
+            keys = [self._make_key(namespace, lu_id) for lu_id in lu_ids]
+            now = datetime.now().isoformat()
+            
+            # Lua 脚本在 Redis 中原子执行，消除读-改-写竞态
+            updated = await self._client.eval(
+                self._INCREMENT_HIT_LUA,
+                len(keys),
+                *keys,
+                now,
+                self.slot_ttl_seconds,
+            )
+            logger.debug(
+                f"increment_hit_count: {updated}/{len(lu_ids)} slots updated"
+            )
             return True
         except Exception as e:
             logger.error(f"Failed to increment hit count in Redis: {e}")
@@ -488,16 +515,21 @@ class RedisAdapter(PersistenceAdapter):
         
         try:
             if namespace:
-                # 单命名空间查询
-                audit_key = f"{self.key_prefix}:{namespace}:audit"
-                entries = await self._client.lrange(audit_key, offset, offset + limit - 1)
+                if lu_id:
+                    # 需要过滤 lu_id，先获取足够多的条目再过滤
+                    audit_key = f"{self.key_prefix}:{namespace}:audit"
+                    entries = await self._client.lrange(audit_key, 0, (offset + limit) * 3)
+                else:
+                    # 单命名空间查询，直接用 lrange 分页
+                    audit_key = f"{self.key_prefix}:{namespace}:audit"
+                    entries = await self._client.lrange(audit_key, offset, offset + limit - 1)
             else:
                 # 获取所有命名空间的审计日志
                 namespaces = await self.get_namespaces()
                 entries = []
                 for ns in namespaces:
                     audit_key = f"{self.key_prefix}:{ns}:audit"
-                    ns_entries = await self._client.lrange(audit_key, 0, limit * 2)
+                    ns_entries = await self._client.lrange(audit_key, 0, (offset + limit) * 2)
                     entries.extend(ns_entries)
             
             # 解析并过滤
@@ -512,7 +544,11 @@ class RedisAdapter(PersistenceAdapter):
                 except json.JSONDecodeError:
                     continue
             
-            # 排序并分页
+            if namespace and not lu_id:
+                # 单命名空间无 lu_id 过滤时，lrange 已完成分页，直接返回
+                return result
+            
+            # 需要过滤或跨命名空间时，排序并应用分页
             result.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
             return result[offset:offset + limit]
             

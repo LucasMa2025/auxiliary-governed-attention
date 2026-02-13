@@ -599,20 +599,34 @@ class PersistenceAdapter(ABC):
     
     # ==================== 同步方法（可选实现） ====================
     
+    @staticmethod
+    def _run_sync(coro):
+        """
+        安全地将异步协程以同步方式执行。
+        
+        兼容 Python 3.10+（get_event_loop 已弃用）和
+        嵌套事件循环场景。
+        """
+        import asyncio
+        try:
+            asyncio.get_running_loop()
+            # 已在事件循环中，不能嵌套 run_until_complete / asyncio.run，
+            # 通过线程池在独立循环中执行
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                return pool.submit(asyncio.run, coro).result()
+        except RuntimeError:
+            # 没有运行中的事件循环，直接创建新循环执行
+            return asyncio.run(coro)
+    
     def save_slot_sync(self, namespace: str, record: KnowledgeRecord) -> bool:
         """同步保存槽位（默认实现）"""
-        import asyncio
-        loop = asyncio.get_event_loop()
-        return loop.run_until_complete(self.save_slot(namespace, record))
+        return self._run_sync(self.save_slot(namespace, record))
     
     def load_slot_sync(self, namespace: str, lu_id: str) -> Optional[KnowledgeRecord]:
         """同步加载槽位（默认实现）"""
-        import asyncio
-        loop = asyncio.get_event_loop()
-        return loop.run_until_complete(self.load_slot(namespace, lu_id))
+        return self._run_sync(self.load_slot(namespace, lu_id))
     
     def load_active_slots_sync(self, namespace: str) -> List[KnowledgeRecord]:
         """同步加载活跃槽位（默认实现）"""
-        import asyncio
-        loop = asyncio.get_event_loop()
-        return loop.run_until_complete(self.load_active_slots(namespace))
+        return self._run_sync(self.load_active_slots(namespace))

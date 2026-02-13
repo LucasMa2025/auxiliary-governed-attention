@@ -465,7 +465,13 @@ class VersionedKnowledgeStore:
             for log in logs:
                 if log.get('action') == 'version_created':
                     details = log.get('details', {})
-                    if 'version_info' in details:
+                    # details 可能是 JSON 字符串（从 SQLite 审计日志返回时）
+                    if isinstance(details, str):
+                        try:
+                            details = json.loads(details)
+                        except (json.JSONDecodeError, TypeError):
+                            continue
+                    if isinstance(details, dict) and 'version_info' in details:
                         versions.append(KnowledgeVersion.from_dict(details['version_info']))
             
             return sorted(versions, key=lambda v: v.version)

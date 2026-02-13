@@ -95,6 +95,16 @@ class CompositeAdapter(PersistenceAdapter):
         
         return any(r is True for r in results)
     
+    def _get_layer_name(self, adapter: PersistenceAdapter) -> str:
+        """获取适配器对应的层名称"""
+        if adapter is self.l0:
+            return "L0"
+        elif adapter is self.l1:
+            return "L1"
+        elif adapter is self.l2:
+            return "L2"
+        return f"L?"
+    
     async def health_check(self) -> Dict[str, Any]:
         health = {
             "status": "healthy" if self._connected else "disconnected",
@@ -102,8 +112,8 @@ class CompositeAdapter(PersistenceAdapter):
             "layers": {},
         }
         
-        for i, adapter in enumerate(self._adapters):
-            level = f"L{i}"
+        for adapter in self._adapters:
+            level = self._get_layer_name(adapter)
             try:
                 layer_health = await adapter.health_check()
                 health["layers"][level] = layer_health
@@ -325,8 +335,8 @@ class CompositeAdapter(PersistenceAdapter):
             "layers": {},
         }
         
-        for i, adapter in enumerate(self._adapters):
-            level = f"L{i}"
+        for adapter in self._adapters:
+            level = self._get_layer_name(adapter)
             try:
                 layer_stats = await adapter.get_statistics(namespace)
                 stats["layers"][level] = layer_stats

@@ -22,7 +22,7 @@ import threading
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import Optional, Dict, Any, Generator
+from typing import Optional, List, Dict, Any, Generator
 import logging
 
 logger = logging.getLogger(__name__)
@@ -168,7 +168,7 @@ class ConnectionPool:
         
         # 连接队列
         self._pool: queue.Queue[PooledConnection] = queue.Queue(maxsize=self.config.max_connections)
-        self._all_connections: list[PooledConnection] = []
+        self._all_connections: List[PooledConnection] = []
         
         # 状态
         self._lock = threading.RLock()
@@ -276,12 +276,17 @@ class ConnectionPool:
             conn = self._pool.get(timeout=self.config.connection_timeout)
             
             # 检查连接健康
+            # was_tracked 表示连接仍被 _all_connections 跟踪（未被健康检查清理）
+            was_tracked = True
             if not conn.is_healthy() or conn.is_expired(self.config):
                 conn.close()
                 with self._lock:
                     if conn in self._all_connections:
                         self._all_connections.remove(conn)
-                    self._stats.total_connections -= 1
+                        self._stats.total_connections -= 1
+                    else:
+                        # 健康检查已经移除此连接并递减了计数器
+                        was_tracked = False
                 
                 # 创建新连接
                 conn = self._create_connection()
@@ -295,7 +300,10 @@ class ConnectionPool:
             conn.mark_used()
             
             with self._lock:
-                self._stats.idle_connections -= 1
+                if was_tracked:
+                    # 仅当连接仍被跟踪时递减 idle；
+                    # 若健康检查已清理则 idle_connections 已被递减
+                    self._stats.idle_connections -= 1
                 self._stats.active_connections += 1
                 self._stats.total_acquire_time_ms += (time.perf_counter() - start_time) * 1000
             

@@ -48,6 +48,8 @@ class PersistenceManager:
         self._dirty_lu_ids: Set[str] = set()
         self._connected = False
         self._dirty_lock = asyncio.Lock()
+        # 记录上次同步时的命中数快照，用于计算增量
+        self._last_synced_hit_counts: Dict[int, int] = {}
     
     async def connect(self) -> bool:
         """连接到持久化层"""
@@ -256,8 +258,8 @@ class PersistenceManager:
         async with self._dirty_lock:
             if not self._dirty_lu_ids:
                 return 0
+            # 复制脏 ID 列表，但不立即清除——等保存成功后再清除
             dirty_ids = set(self._dirty_lu_ids)
-            self._dirty_lu_ids.clear()
 
         records = []
         for lu_id in dirty_ids:
@@ -278,22 +280,42 @@ class PersistenceManager:
                     )
                     records.append(record)
         
-        count = await self.adapter.save_batch(self.namespace, records)
-        return count
+        try:
+            count = await self.adapter.save_batch(self.namespace, records)
+            # 保存成功后才清除已同步的脏 ID
+            async with self._dirty_lock:
+                self._dirty_lu_ids -= dirty_ids
+            return count
+        except Exception as e:
+            # 保存失败，脏 ID 保留以便下次重试
+            logger.error(f"Failed to flush dirty records, will retry on next flush: {e}")
+            return 0
     
     async def sync_hit_counts(self, aga_module) -> bool:
         """
-        同步命中计数到持久化层
+        同步命中计数到持久化层（增量同步）
         
-        建议定期调用，而非每次推理后调用
+        只同步自上次同步以来新增的命中数，避免重复计数膨胀。
+        建议定期调用，而非每次推理后调用。
         """
-        lu_ids_with_hits = []
+        lu_ids_with_new_hits = []
         for i in range(aga_module.num_slots):
-            if aga_module.slot_hit_counts[i] > 0 and aga_module.slot_lu_ids[i]:
-                lu_ids_with_hits.append(aga_module.slot_lu_ids[i])
+            lu_id = aga_module.slot_lu_ids[i]
+            if not lu_id:
+                continue
+            
+            current_hits = aga_module.slot_hit_counts[i]
+            last_synced = self._last_synced_hit_counts.get(i, 0)
+            
+            if current_hits > last_synced:
+                # 有新增命中，每个新增命中对应一次 increment
+                delta = current_hits - last_synced
+                for _ in range(delta):
+                    lu_ids_with_new_hits.append(lu_id)
+                self._last_synced_hit_counts[i] = current_hits
         
-        if lu_ids_with_hits:
-            return await self.adapter.increment_hit_count(self.namespace, lu_ids_with_hits)
+        if lu_ids_with_new_hits:
+            return await self.adapter.increment_hit_count(self.namespace, lu_ids_with_new_hits)
         return True
     
     # ==================== 统计和查询 ====================
