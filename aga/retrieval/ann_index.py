@@ -366,12 +366,11 @@ class FAISSIndex(BaseANNIndex):
                         # 更新已存在的
                         self._vectors[lu_id] = key_vector.copy()
                 
-                # 确保已训练
+                # 确保已训练（_ensure_trained 内部已将 vector 加入训练数据）
                 self._ensure_trained(vector)
                 
                 if not self._is_trained:
-                    # 缓存向量，等待训练
-                    self._training_vectors.append(vector)
+                    # 训练数据不足，向量已在 _ensure_trained 中缓存，等待训练
                     return False
                 
                 # 分配 ID
@@ -417,11 +416,11 @@ class FAISSIndex(BaseANNIndex):
                         if len(self._vectors) < self.config.max_stored_vectors or lu_id in self._vectors:
                             self._vectors[lu_id] = key_vectors[i].copy()
                 
-                # 确保已训练
+                # 确保已训练（_ensure_trained 内部已将 vectors 加入训练数据）
                 self._ensure_trained(vectors)
                 
                 if not self._is_trained:
-                    self._training_vectors.append(vectors)
+                    # 训练数据不足，向量已在 _ensure_trained 中缓存，等待训练
                     return 0
                 
                 # 批量添加
@@ -616,17 +615,24 @@ class FAISSIndex(BaseANNIndex):
         return self._do_rebuild()
     
     def _do_rebuild(self) -> bool:
-        """执行重建（内部方法）"""
+        """
+        执行重建（内部方法）
+        
+        仅在没有存储向量副本时调用。
+        由于无法重建实际索引，只记录警告。
+        不能简单清除 _deleted_ids，否则已删除向量会在搜索中"复活"。
+        """
         with self._lock:
-            logger.info("Rebuilding FAISS index (clearing deleted markers)...")
+            if self._deleted_ids:
+                logger.warning(
+                    f"Cannot rebuild FAISS index: no stored vectors available "
+                    f"(store_vectors=False). {len(self._deleted_ids)} deleted "
+                    f"vectors remain as soft-deleted. Enable store_vectors for "
+                    f"full rebuild support."
+                )
             
-            # 重置状态
-            self._deleted_ids.clear()
-            self._stats["deleted_vectors"] = 0
             self._stats["last_rebuild_time"] = time.time()
-            
-            logger.info("FAISS index rebuild completed")
-            return True
+            return False  # 无法实际重建
     
     def rebuild_from_vectors(
         self, 
@@ -651,6 +657,10 @@ class FAISSIndex(BaseANNIndex):
             self._deleted_ids.clear()
             self._next_id = 0
             
+            # 重置统计计数器（add_batch 会重新累加）
+            self._stats["total_vectors"] = 0
+            self._stats["deleted_vectors"] = 0
+            
             # 重新训练（如果需要）
             if not isinstance(self._index, self._faiss.IndexFlat):
                 vectors_f32 = vectors.astype(np.float32)
@@ -659,7 +669,6 @@ class FAISSIndex(BaseANNIndex):
             # 批量添加
             self.add_batch(lu_ids, vectors)
             
-            self._stats["deleted_vectors"] = 0
             self._stats["last_rebuild_time"] = time.time()
             
             # 记录监控指标
@@ -1023,10 +1032,13 @@ class HNSWIndex(BaseANNIndex):
                 self._deleted_ids.clear()
                 self._next_id = 0
                 
+                # 重置统计计数器（add_batch 会重新累加）
+                self._stats["total_vectors"] = 0
+                self._stats["deleted_vectors"] = 0
+                
                 # 重新添加有效向量
                 self.add_batch(valid_lu_ids, valid_vectors)
                 
-                self._stats["deleted_vectors"] = 0
                 self._stats["rebuilds"] += 1
                 
                 logger.info(f"HNSW index rebuilt with {len(valid_lu_ids)} vectors")

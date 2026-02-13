@@ -205,6 +205,17 @@ class WarmCache:
         self._remove(oldest_id)
         self._stats["evictions"] += 1
     
+    def contains(self, lu_id: str) -> bool:
+        """检查缓存项是否存在（不更新统计）"""
+        with self._lock:
+            if lu_id not in self._cache:
+                return False
+            # 检查 TTL
+            if time.time() - self._timestamps[lu_id] > self.ttl_seconds:
+                self._remove(lu_id)
+                return False
+            return True
+    
     def clear(self):
         """清空缓存"""
         with self._lock:
@@ -564,10 +575,10 @@ class DynamicKnowledgeLoader:
         if not self.config.prefetch_enabled:
             return
         
-        # 过滤已在缓存中的
+        # 过滤已在缓存中的（使用 contains 避免影响 hit/miss 统计）
         to_prefetch = []
         for lu_id in lu_ids[:self.config.prefetch_batch_size]:
-            if self._warm_cache.get(lu_id) is None:
+            if not self._warm_cache.contains(lu_id):
                 to_prefetch.append(lu_id)
         
         if not to_prefetch:
