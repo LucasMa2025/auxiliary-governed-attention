@@ -273,8 +273,8 @@ class SlotRouter(nn.Module):
         self.top_k = min(top_k, num_slots)
         self.chunk_size = chunk_size
         
-        # v2.1: 使用更多维度进行路由（信息保留）
-        self.router_dim = min(bottleneck_dim, 48)  # 不低于 48 维
+        # v2.1: 使用紧凑维度进行路由（效率优先）
+        self.router_dim = min(bottleneck_dim, 48)  # 路由维度不超过 48，节省计算
         
         # 可学习的路由投影（从 bottleneck 到 router）
         self.router_proj = nn.Linear(bottleneck_dim, self.router_dim, bias=False)

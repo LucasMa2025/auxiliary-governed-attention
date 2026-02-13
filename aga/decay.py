@@ -11,7 +11,7 @@ AGA 持久化衰减模块 (Persistence Decay)
 - 硬重置机制：超过阈值时强制重置
 """
 import math
-from typing import Optional, Dict, Any, Callable
+from typing import Optional, Dict, Any, Callable, Tuple
 from dataclasses import dataclass, field
 from enum import Enum
 import logging
@@ -133,7 +133,7 @@ class PersistenceDecay(nn.Module):
         raw_gate: torch.Tensor,
         context: DecayContext,
         layer_idx: int,
-    ) -> tuple[torch.Tensor, DecayContext]:
+    ) -> Tuple[torch.Tensor, DecayContext]:
         """
         应用持久化衰减
         

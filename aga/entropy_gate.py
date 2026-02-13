@@ -406,23 +406,23 @@ class EntropyGate(nn.Module):
         return gate
     
     def _update_adaptive_thresholds(self, entropy: torch.Tensor):
-        """更新自适应阈值"""
+        """更新自适应阈值（使用 .data 避免破坏 buffer 注册）"""
         entropy = torch.nan_to_num(entropy, nan=0.0, posinf=self.config.entropy_clamp_max, neginf=0.0)
         momentum = self.config.adaptive_momentum
         current_mean = entropy.mean().item()
         current_std = entropy.std().item()
         
-        # 更新 EMA
-        self.entropy_ema = momentum * self.entropy_ema + (1 - momentum) * current_mean
+        # 更新 EMA（使用 .data 原地修改，保持 buffer 注册）
+        self.entropy_ema.data.fill_(momentum * self.entropy_ema.item() + (1 - momentum) * current_mean)
         
         # 更新阈值
         ema = self.entropy_ema.item()
-        self.running_tau_low = momentum * self.running_tau_low + (1 - momentum) * (ema - current_std)
-        self.running_tau_high = momentum * self.running_tau_high + (1 - momentum) * (ema + current_std)
+        self.running_tau_low.data.fill_(momentum * self.running_tau_low.item() + (1 - momentum) * (ema - current_std))
+        self.running_tau_high.data.fill_(momentum * self.running_tau_high.item() + (1 - momentum) * (ema + current_std))
         
         # 确保合理范围
-        self.running_tau_low.clamp_(min=0.1, max=self.running_tau_high - 0.1)
-        self.running_tau_high.clamp_(min=self.running_tau_low + 0.1, max=5.0)
+        self.running_tau_low.data.clamp_(min=0.1, max=self.running_tau_high.item() - 0.1)
+        self.running_tau_high.data.clamp_(min=self.running_tau_low.item() + 0.1, max=5.0)
 
 
 class EntropyGateWithDecay(nn.Module):
