@@ -164,10 +164,9 @@ class SyncSubscriber:
             self._stats["errors"] += 1
             logger.error(f"Message handling error: {e}")
             
-            # 发送 NACK
+            # 发送 NACK（nacks_sent 已在 _send_ack 内部递增）
             if self.send_ack and message.require_ack:
                 await self._send_ack(message, success=False, error=str(e))
-                self._stats["nacks_sent"] += 1
     
     async def _send_ack(
         self,
@@ -188,7 +187,12 @@ class SyncSubscriber:
         
         ack_channel = f"{self.channel}:ack"
         await self._backend.publish(ack_channel, ack_message)
-        self._stats["acks_sent"] += 1
+        
+        # 分别计数 ACK 和 NACK，避免 acks_sent 混合统计
+        if success:
+            self._stats["acks_sent"] += 1
+        else:
+            self._stats["nacks_sent"] += 1
     
     # ==================== 处理器注册 ====================
     

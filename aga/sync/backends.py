@@ -331,10 +331,10 @@ class KafkaBackend(SyncBackend):
         
         self._subscriptions[channel] = callback
         
-        # 创建消费者
         if not self._consumer:
+            # 首次订阅：创建消费者
             self._consumer = AIOKafkaConsumer(
-                channel,
+                *list(self._subscriptions.keys()),
                 bootstrap_servers=self.bootstrap_servers,
                 group_id=self.group_id,
                 value_deserializer=lambda v: v.decode() if isinstance(v, bytes) else v,
@@ -343,6 +343,10 @@ class KafkaBackend(SyncBackend):
             
             # 启动监听任务
             self._listener_task = asyncio.create_task(self._listen())
+        else:
+            # 后续订阅：更新 consumer 的 topic 列表
+            # AIOKafkaConsumer.subscribe() 替换整个 topic 集合
+            self._consumer.subscribe(list(self._subscriptions.keys()))
         
         logger.info(f"Subscribed to {channel}")
     
