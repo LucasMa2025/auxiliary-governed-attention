@@ -190,6 +190,7 @@ class DistributedSynchronizer:
         self._handlers: Dict[MessageType, List[Callable]] = {}
         self._running = False
         self._client = None
+        self._consumer = None  # Kafka consumer（需单独关闭）
     
     async def start(self) -> bool:
         """启动同步器"""
@@ -235,6 +236,14 @@ class DistributedSynchronizer:
                 await self._client.close()
             elif self.backend == "kafka":
                 await self._client.stop()
+        
+        # 关闭 Kafka consumer（与 producer 分开管理）
+        if self._consumer is not None:
+            try:
+                await self._consumer.stop()
+            except Exception as e:
+                logger.warning(f"Failed to stop Kafka consumer: {e}")
+            self._consumer = None
         
         logger.info(f"Synchronizer stopped: instance={self.instance_id}")
     
@@ -288,23 +297,24 @@ class DistributedSynchronizer:
         topic = f"aga-{self.namespace}-sync"
         
         # 生产者
-        self._producer = AIOKafkaProducer(
+        producer = AIOKafkaProducer(
             bootstrap_servers=bootstrap_servers,
         )
-        await self._producer.start()
+        await producer.start()
         
         # 消费者
-        self._consumer = AIOKafkaConsumer(
+        consumer = AIOKafkaConsumer(
             topic,
             bootstrap_servers=bootstrap_servers,
             group_id=f"aga-{self.instance_id}",
         )
-        await self._consumer.start()
+        await consumer.start()
+        
+        self._client = producer
+        self._consumer = consumer
         
         # 启动消费循环
         asyncio.create_task(self._kafka_consume())
-        
-        self._client = self._producer
     
     async def _kafka_consume(self):
         """Kafka 消费循环"""
@@ -368,7 +378,7 @@ class DistributedSynchronizer:
                 await self._client.publish(channel, message.to_json())
             elif self.backend == "kafka":
                 topic = f"aga-{self.namespace}-sync"
-                await self._producer.send(topic, message.to_json().encode())
+                await self._client.send(topic, message.to_json().encode())
             else:
                 await self._local_queue.put(message)
             

@@ -74,20 +74,31 @@ class VectorClock:
             self.clocks[instance_id] = max(self.clocks.get(instance_id, 0), clock)
     
     def happens_before(self, other: "VectorClock") -> bool:
-        """判断是否发生在另一个时钟之前"""
-        if not self.clocks:
-            return True
+        """
+        判断是否发生在另一个时钟之前（严格偏序）
         
-        for instance_id, clock in self.clocks.items():
-            if clock > other.clocks.get(instance_id, 0):
+        定义: self < other 当且仅当
+          ∀k: self[k] ≤ other[k]  且  ∃k: self[k] < other[k]
+        
+        修复: 必须检查两个时钟的所有键的并集，
+        否则遗漏 other 中新增的键会导致因果关系判断错误。
+        """
+        all_keys = set(self.clocks.keys()) | set(other.clocks.keys())
+        
+        if not all_keys:
+            return False  # 两个空时钟相等，不是"先于"
+        
+        # 检查 self[k] <= other[k] 对所有 k
+        for k in all_keys:
+            if self.clocks.get(k, 0) > other.clocks.get(k, 0):
                 return False
         
-        # 至少有一个严格小于
-        for instance_id, clock in self.clocks.items():
-            if clock < other.clocks.get(instance_id, 0):
+        # 检查至少有一个严格小于（排除完全相等的情况）
+        for k in all_keys:
+            if self.clocks.get(k, 0) < other.clocks.get(k, 0):
                 return True
         
-        return False
+        return False  # 完全相等
     
     def concurrent_with(self, other: "VectorClock") -> bool:
         """判断是否与另一个时钟并发"""

@@ -133,8 +133,8 @@ class InstanceCoordinator:
         self._client = None
         
         # 配置
-        self.heartbeat_interval = config.get("heartbeat_interval", 10)
-        self.instance_timeout = config.get("instance_timeout", 30)
+        self.heartbeat_interval = self.config.get("heartbeat_interval", 10)
+        self.instance_timeout = self.config.get("instance_timeout", 30)
         
         # 回调
         self._on_instance_join: Optional[Callable] = None
