@@ -449,39 +449,38 @@ class RedisPersistence(BasePersistence):
             return False
     
     def increment_hit_count(self, namespace: str, lu_ids: List[str]) -> bool:
-        """批量增加命中计数"""
+        """批量增加命中计数（使用 Lua 脚本保证原子性）"""
         if not lu_ids:
             return True
         
         try:
             key = self._slot_key(namespace)
             
-            # 使用 Lua 脚本原子更新
+            # 使用 Lua 脚本原子更新，避免 read-modify-write 竞态条件
+            # KEYS[1] = hash key
+            # ARGV[1] = 当前时间戳
+            # ARGV[2..N] = lu_id 列表
             lua_script = """
             local key = KEYS[1]
-            for i = 1, #ARGV do
+            local timestamp = ARGV[1]
+            local updated = 0
+            for i = 2, #ARGV do
                 local lu_id = ARGV[i]
                 local data = redis.call('HGET', key, lu_id)
                 if data then
                     local slot = cjson.decode(data)
-                    slot.hit_count = (slot.hit_count or 0) + 1
-                    slot.last_hit_ts = ARGV[#ARGV + 1]
+                    slot['hit_count'] = (slot['hit_count'] or 0) + 1
+                    slot['consecutive_misses'] = 0
+                    slot['last_hit_ts'] = tonumber(timestamp)
                     redis.call('HSET', key, lu_id, cjson.encode(slot))
+                    updated = updated + 1
                 end
             end
-            return #ARGV
+            return updated
             """
             
-            # 简化实现：逐个更新
-            pipe = self.client.pipeline()
-            for lu_id in lu_ids:
-                slot_data = self.load_slot(namespace, lu_id)
-                if slot_data:
-                    slot_data["hit_count"] = slot_data.get("hit_count", 0) + 1
-                    slot_data["last_hit_ts"] = time.time()
-                    pipe.hset(key, lu_id, json.dumps(slot_data))
-            
-            pipe.execute()
+            current_ts = str(time.time())
+            self.client.eval(lua_script, 1, key, current_ts, *lu_ids)
             return True
         except Exception as e:
             logger.error(f"Failed to increment hit count in Redis: {e}")

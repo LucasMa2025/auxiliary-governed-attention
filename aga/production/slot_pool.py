@@ -178,6 +178,7 @@ class SlotPool:
         self._keys_cache: Optional[torch.Tensor] = None
         self._values_cache: Optional[torch.Tensor] = None
         self._reliability_cache: Optional[torch.Tensor] = None
+        self._active_slot_indices: List[int] = []  # 活跃槽位的实际 slot_idx，与缓存向量一一对应
         self._cache_dirty = True
         
         # 线程锁
@@ -366,13 +367,14 @@ class SlotPool:
         vectors = torch.nan_to_num(vectors, nan=0.0, posinf=0.0, neginf=0.0)
         
         # 批量范数裁剪（向量化操作）
+        # 行为与 _normalize_vector 一致：始终将向量归一化到 target_norm
         if self.config.enable_norm_clipping:
             norms = vectors.norm(dim=1, keepdim=True)
             target_norm = self.config.key_norm_target if is_key else self.config.value_norm_target
             
-            # 只裁剪超过目标范数的向量
+            # 对 norm > 0 的向量归一化到 target_norm（与 _normalize_vector 行为一致）
             scale = torch.where(
-                norms > target_norm,
+                norms > 0,
                 target_norm / (norms + 1e-8),
                 torch.ones_like(norms)
             )
@@ -458,7 +460,7 @@ class SlotPool:
         with self._lock:
             return self._slots.get(slot_idx)
     
-    def get_vectors(self) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def get_vectors(self) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, List[int]]:
         """
         获取所有活跃槽位的向量（用于批量计算）
         
@@ -466,11 +468,12 @@ class SlotPool:
             keys: [active_count, bottleneck_dim]
             values: [active_count, hidden_dim]
             reliability: [active_count]
+            active_slot_indices: 活跃槽位的实际 slot_idx 列表，与向量一一对应
         """
         with self._lock:
             if self._cache_dirty or self._keys_cache is None:
                 self._rebuild_cache()
-            return self._keys_cache, self._values_cache, self._reliability_cache
+            return self._keys_cache, self._values_cache, self._reliability_cache, list(self._active_slot_indices)
     
     def _rebuild_cache(self):
         """重建向量缓存"""
@@ -478,19 +481,22 @@ class SlotPool:
             self._keys_cache = torch.zeros(0, self.bottleneck_dim, device=self.device)
             self._values_cache = torch.zeros(0, self.hidden_dim, device=self.device)
             self._reliability_cache = torch.zeros(0, device=self.device)
+            self._active_slot_indices = []
             self._cache_dirty = False
             return
         
-        # 只包含非隔离的槽位
-        active_slots = [
-            s for s in self._slots.values()
-            if s.lifecycle_state != LifecycleState.QUARANTINED
-        ]
+        # 只包含非隔离的槽位，按 slot_idx 排序保证顺序一致性
+        active_slots = sorted(
+            [s for s in self._slots.values()
+             if s.lifecycle_state != LifecycleState.QUARANTINED],
+            key=lambda s: s.slot_idx
+        )
         
         if not active_slots:
             self._keys_cache = torch.zeros(0, self.bottleneck_dim, device=self.device)
             self._values_cache = torch.zeros(0, self.hidden_dim, device=self.device)
             self._reliability_cache = torch.zeros(0, device=self.device)
+            self._active_slot_indices = []
         else:
             self._keys_cache = torch.stack([s.key_vector for s in active_slots])
             self._values_cache = torch.stack([s.value_vector for s in active_slots])
@@ -498,22 +504,37 @@ class SlotPool:
                 [s.reliability for s in active_slots],
                 device=self.device
             )
+            # 记录活跃槽位的实际 slot_idx，与缓存数组一一对应
+            self._active_slot_indices = [s.slot_idx for s in active_slots]
         
         self._cache_dirty = False
     
-    def record_hits(self, slot_indices: List[int]):
-        """记录命中（带索引有效性检查）"""
+    def record_hits(self, active_indices: List[int]):
+        """
+        记录命中
+        
+        Args:
+            active_indices: 活跃槽位缓存数组中的索引（由 get_vectors 返回的数组的位置索引），
+                           而非全局 slot_idx。
+        """
         with self._lock:
-            # 过滤无效索引
-            valid_indices = set()
-            for idx in slot_indices:
-                if 0 <= idx < self.max_slots and idx in self._slots:
-                    valid_indices.add(idx)
+            # 确保缓存是最新的，以获取正确的映射
+            if self._cache_dirty or self._keys_cache is None:
+                self._rebuild_cache()
+            
+            # 将活跃缓存数组索引转换为实际的 slot_idx
+            hit_slot_ids = set()
+            for active_idx in active_indices:
+                if 0 <= active_idx < len(self._active_slot_indices):
+                    hit_slot_ids.add(self._active_slot_indices[active_idx])
+                else:
+                    logger.debug(f"record_hits: invalid active_idx={active_idx}, "
+                                 f"active_count={len(self._active_slot_indices)}")
             
             for slot_idx, slot in self._slots.items():
                 if slot.lifecycle_state == LifecycleState.QUARANTINED:
                     continue
-                if slot_idx in valid_indices:
+                if slot_idx in hit_slot_ids:
                     slot.record_hit()
                     self._total_hits += 1
                 else:

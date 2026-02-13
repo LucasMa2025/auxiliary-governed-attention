@@ -655,7 +655,7 @@ class DynamicSlotPool:
         """获取槽位"""
         return self._slot_pool.get_slot(lu_id)
     
-    def get_vectors(self) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def get_vectors(self) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, List[int]]:
         """获取向量（用于推理）"""
         return self._slot_pool.get_vectors()
     
