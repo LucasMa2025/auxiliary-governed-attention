@@ -125,11 +125,12 @@ class TestSlotPool:
                 lifecycle_state=LifecycleState.CONFIRMED,
             )
         
-        keys, values, reliability = pool.get_vectors()
+        keys, values, reliability, active_indices = pool.get_vectors()
         
         assert keys.shape[0] == 5
         assert values.shape[0] == 5
         assert reliability.shape[0] == 5
+        assert len(active_indices) == 5
     
     def test_quarantined_excluded_from_vectors(self, pool, random_key_vector, random_value_vector):
         """测试隔离槽位不包含在向量中"""
@@ -151,7 +152,7 @@ class TestSlotPool:
         assert slot.reliability == 0.0
         
         # 获取向量 - 隔离的槽位可能被排除或 reliability 为 0
-        keys, values, reliability = pool.get_vectors()
+        keys, values, reliability, active_indices = pool.get_vectors()
         
         # 验证向量数量（可能排除了隔离的槽位）
         assert keys.shape[0] >= 4  # 至少有 4 个非隔离槽位
@@ -271,11 +272,12 @@ class TestSlotPoolEdgeCases:
     
     def test_empty_pool_vectors(self, pool):
         """测试空池的向量"""
-        keys, values, reliability = pool.get_vectors()
+        keys, values, reliability, active_indices = pool.get_vectors()
         
         assert keys.shape[0] == 0
         assert values.shape[0] == 0
         assert reliability.shape[0] == 0
+        assert len(active_indices) == 0
     
     def test_concurrent_access(self, pool, random_key_vector, random_value_vector):
         """测试并发访问"""
