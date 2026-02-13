@@ -344,12 +344,14 @@ class CachedEncoder:
                     self._stats.hits += 1
                 return cached
         
-        if self._stats:
-            self._stats.misses += 1
-        
         vector = self.encoder.encode_to_key(text)
+        
         with self._lock_context():
-            self._cache.put(cache_key, vector)
+            evicted = self._cache.put(cache_key, vector)
+            if self._stats:
+                self._stats.misses += 1
+                if evicted:
+                    self._stats.evictions += 1
         return vector
     
     def encode_to_value(self, text: str) -> List[float]:
@@ -363,12 +365,14 @@ class CachedEncoder:
                     self._stats.hits += 1
                 return cached
         
-        if self._stats:
-            self._stats.misses += 1
-        
         vector = self.encoder.encode_to_value(text)
+        
         with self._lock_context():
-            self._cache.put(cache_key, vector)
+            evicted = self._cache.put(cache_key, vector)
+            if self._stats:
+                self._stats.misses += 1
+                if evicted:
+                    self._stats.evictions += 1
         return vector
     
     def encode_constraint(

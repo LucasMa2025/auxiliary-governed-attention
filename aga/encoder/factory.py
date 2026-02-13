@@ -12,7 +12,7 @@ v1.1 更新:
 - 优化 list_available 的信息安全性
 """
 
-from typing import Dict, List, Any, Optional, Type
+from typing import Dict, List, Any, Optional, Tuple, Type
 import logging
 import os
 
@@ -100,8 +100,22 @@ class EncoderFactory:
         """
         encoder_class = cls.ENCODER_CLASSES.get(config.encoder_type)
         
+        # 自定义编码器：通过 model 名称在 _custom_encoders 中查找
+        if encoder_class is None and config.encoder_type == EncoderType.CUSTOM:
+            custom_name = config.model or config.extra.get("custom_name")
+            if custom_name and custom_name in cls._custom_encoders:
+                encoder_class = cls._custom_encoders[custom_name]
+            else:
+                registered = list(cls._custom_encoders.keys()) or ["(none)"]
+                raise ValueError(
+                    f"Custom encoder '{custom_name}' not registered. "
+                    f"Registered custom encoders: {registered}"
+                )
+        
         if encoder_class is None:
             available_types = [t.value for t in cls.ENCODER_CLASSES.keys()]
+            if cls._custom_encoders:
+                available_types.append(f"custom ({', '.join(cls._custom_encoders.keys())})")
             raise ValueError(
                 f"Unknown encoder type: {config.encoder_type}. "
                 f"Available types: {available_types}"
@@ -351,7 +365,7 @@ class EncoderFactory:
         cls,
         encoder: BaseEncoder,
         expected_signature: Dict[str, Any],
-    ) -> tuple:
+    ) -> Tuple[bool, str]:
         """
         验证编码器一致性
         

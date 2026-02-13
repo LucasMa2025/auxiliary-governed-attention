@@ -543,7 +543,7 @@ class OllamaEncoder(BaseEncoder):
             base_url = (self.config.base_url or "http://localhost:11434").rstrip('/')
             response = httpx.get(f"{base_url}/api/tags", timeout=5.0)
             return response.status_code == 200
-        except:
+        except Exception:
             return False
     
     def encode(self, text: str) -> List[float]:
@@ -618,7 +618,7 @@ class VLLMEncoder(BaseEncoder):
             base_url = (self.config.base_url or "http://localhost:8000").rstrip('/')
             response = httpx.get(f"{base_url}/v1/models", timeout=5.0)
             return response.status_code == 200
-        except:
+        except Exception:
             return False
     
     def _get_client(self):
