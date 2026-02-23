@@ -17,10 +17,10 @@
 
 ## 📖 文档 / Documentation
 
-| 语言 / Language | README                       | 用户手册 / User Manual                      | 产品文档 / Product Doc                      |
-| --------------- | ---------------------------- | ------------------------------------------- | ------------------------------------------- |
-| 🇨🇳 中文         | [README_zh.md](README_zh.md) | [user_manual_zh.md](docs/user_manual_zh.md) | [product_doc_zh.md](docs/product_doc_zh.md) |
-| 🇬🇧 English      | [README_en.md](README_en.md) | [user_manual_en.md](docs/user_manual_en.md) | [product_doc_en.md](docs/product_doc_en.md) |
+| 语言 / Language | README                       | 
+| --------------- | ---------------------------- |
+| 🇨🇳 中文         | [README_zh.md](README_zh.md) |
+| 🇬🇧 English      | [README_en.md](README_en.md) |
 
 ---
 
@@ -48,3 +48,4 @@ summary = session.get_session_summary()
 ---
 
 MIT License · Copyright (c) 2024-2026 AGA Team
+
