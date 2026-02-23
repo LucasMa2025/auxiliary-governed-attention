@@ -47,5 +47,6 @@ summary = session.get_session_summary()
 
 ---
 
-MIT License · Copyright (c) 2024-2026 AGA Team
+MIT License · Copyright (c) 2026 AGA Team
+
 
